@@ -47,6 +47,7 @@
 #endif
 #ifdef PS3RECOMP_RSX_VULKAN
 #include "pc/input.h"
+#include "pc/overlay.h"
 #endif
 
 #ifdef _WIN32
@@ -177,6 +178,9 @@ extern "C" unsigned ppu_boot_frames_presented(void)
 static void present_guest_frame(void)
 {
     rsx_backend_present();
+#ifdef PS3RECOMP_RSX_VULKAN
+    gowa_overlay_note_flip();
+#endif
     /* This thread increments and guest threads read, so interlocked rather
      * than a volatile ++, which on arm64 is neither atomic nor a fence. */
     InterlockedIncrement(&g_frames_presented);
@@ -191,7 +195,10 @@ static DWORD WINAPI frame_clock(LPVOID)
     fprintf(stderr, "[rsx] %s backend init %s\n", RSX_BACKEND_NAME,
             rsx_ok ? "OK -- window open" : "FAILED");
 #ifdef PS3RECOMP_RSX_VULKAN
-    if (rsx_ok) gowa_input_start();
+    if (rsx_ok) {
+        gowa_input_start();
+        gowa_overlay_start();
+    }
 #endif
 
     unsigned  last_flip = 0;
@@ -236,6 +243,7 @@ static DWORD WINAPI frame_clock(LPVOID)
             }
 #ifdef PS3RECOMP_RSX_VULKAN
             gowa_input_tick();
+            gowa_overlay_tick();
 #endif
             unsigned fc = cellGcm_flip_request_count();
             if (fc != last_flip) {

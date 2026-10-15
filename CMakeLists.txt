@@ -168,9 +168,32 @@ add_executable(${PROJECT_NAME}
 )
 
 if(PS3RECOMP_RSX_VULKAN)
-    target_sources(${PROJECT_NAME} PRIVATE pc/input.cpp)
-    set_property(SOURCE main.cpp pc/input.cpp APPEND PROPERTY
+    set(IMGUI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui")
+    set(IMGUI_SOURCES
+        "${IMGUI_DIR}/imgui.cpp"
+        "${IMGUI_DIR}/imgui_draw.cpp"
+        "${IMGUI_DIR}/imgui_tables.cpp"
+        "${IMGUI_DIR}/imgui_widgets.cpp"
+        "${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp")
+    target_sources(${PROJECT_NAME} PRIVATE pc/input.cpp pc/game_ini.cpp pc/overlay.cpp ${IMGUI_SOURCES})
+    set_property(SOURCE main.cpp pc/input.cpp pc/overlay.cpp APPEND PROPERTY
         INCLUDE_DIRECTORIES "${PS3RECOMP_DIR}/libs/input")
+    set_property(SOURCE pc/overlay.cpp ${IMGUI_SOURCES} APPEND PROPERTY
+        INCLUDE_DIRECTORIES "${IMGUI_DIR}" "${PS3RECOMP_VULKAN_INCLUDE_DIR}")
+    set_property(SOURCE pc/overlay.cpp "${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp" APPEND PROPERTY
+        COMPILE_DEFINITIONS IMGUI_IMPL_VULKAN_NO_PROTOTYPES)
+    set_property(SOURCE ${IMGUI_SOURCES} APPEND PROPERTY COMPILE_OPTIONS "-w")
+    find_package(Git QUIET)
+    set(GOWA_COMMIT "unknown")
+    set(GOWA_TOOLKIT_COMMIT "unknown")
+    if(GIT_FOUND)
+        execute_process(COMMAND "${GIT_EXECUTABLE}" -C "${CMAKE_CURRENT_SOURCE_DIR}" describe --always --dirty
+                        OUTPUT_VARIABLE GOWA_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        execute_process(COMMAND "${GIT_EXECUTABLE}" -C "${PS3RECOMP_DIR}" describe --always --dirty
+                        OUTPUT_VARIABLE GOWA_TOOLKIT_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    endif()
+    set_property(SOURCE pc/overlay.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+        "GOWA_COMMIT=\"${GOWA_COMMIT}\"" "GOWA_TOOLKIT_COMMIT=\"${GOWA_TOOLKIT_COMMIT}\"")
 endif()
 
 if(SPU_SOURCES)

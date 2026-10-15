@@ -58,7 +58,7 @@ def main():
                   GCM_PARK_RESYNC_MS='2000000000', GCM_FLIP_MIN_MS='250', GCM_FLIP_PACE_WINDOW='3',
                   SPURS_KERN_THREADS='6', SPURS_KERN_PARALLEL='7,13,14,15,16', SPURS_KERN_BUSY_RERUN='1', SPURS_KERN_IDLE_SHIFT='0',
                   PS3RECOMP_VK_GUEST_PROGRAMS='1', PS3RECOMP_VK_WINDOW='1', AUDIO_RATE='1',
-                  RSX_FRAME_CSV=str(out / 'frames.csv'))
+                  RSX_FRAME_CSV=str(out / 'frames.csv'), GOWA_GAME_INI=str(out / 'game.ini'))
     config.update(item.split('=', 1) for item in args.env)
     env.update(config)
     (out / 'run.json').write_text(json.dumps(dict(exe=str(args.exe.resolve()), seconds=args.seconds,
