@@ -52,3 +52,7 @@ core
 core.*
 *.ppm
 *.gdb_history
+
+/docs/
+*.md
+!/README.md
