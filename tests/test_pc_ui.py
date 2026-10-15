@@ -24,6 +24,9 @@ class LauncherUITest(unittest.TestCase):
                 with patch.object(ui, 'load', return_value=settings.load(path)), \
                      patch.object(ui, 'save', side_effect=lambda data: settings.save(data, path)), \
                      patch.object(ui, 'CONFIG_DIR', Path(folder)), \
+                     patch.object(ui, 'GAME_INI', Path(folder) / 'game.ini'), \
+                     patch.object(ui, 'BACKUP_DIR', Path(folder) / 'backups'), \
+                     patch.object(ui, 'SAVEDATA_DIR', Path(folder) / 'savedata'), \
                      patch.object(ui, 'game_command', return_value=[sys.executable, '-u', '-c',
                          'import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); '
                          'print("ready",flush=True); time.sleep(30)']):
@@ -63,14 +66,18 @@ class LauncherUITest(unittest.TestCase):
             app = None
             try:
                 with patch.object(ui, 'load', return_value=settings.load(path)), \
-                     patch.object(ui, 'save', side_effect=lambda data: settings.save(data, path)):
+                     patch.object(ui, 'save', side_effect=lambda data: settings.save(data, path)), \
+                     patch.object(ui, 'GAME_INI', Path(folder) / 'game.ini'), \
+                     patch.object(ui, 'BACKUP_DIR', Path(folder) / 'backups'), \
+                     patch.object(ui, 'SAVEDATA_DIR', Path(folder) / 'savedata'):
                     app = ui.Launcher(root)
                     for name in app.pages:
                         app.show(name)
                         root.update()
                         self.assertTrue(app.pages[name].winfo_ismapped())
                     app.show('Controles')
-                    app.key_vars['cross'].set('V')
+                    app.key_vars['cross'][0].set('V')
+                    app.key_vars['cross'][1].set('')
                     app.var('pad_style').set('xbox')
                     app.pad_vars['cross'] = 'b'
                     app.relabel()
@@ -81,7 +88,8 @@ class LauncherUITest(unittest.TestCase):
                     self.assertEqual(saved['controls']['key']['cross'], 'V')
                     self.assertEqual(saved['controls']['pad']['cross'], 'b')
                     app.reset_controls()
-                    self.assertEqual(app.key_vars['cross'].get(), 'Space')
+                    self.assertEqual(app.key_vars['cross'][0].get(), 'Space')
+                    self.assertEqual(app.key_vars['cross'][1].get(), 'K')
                     self.assertEqual(app.pad_boxes['cross'].get(), 'A')
                     root.update()
                     if os.environ.get('GOWA_UI_SCREENSHOT'):

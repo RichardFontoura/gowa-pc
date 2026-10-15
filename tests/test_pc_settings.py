@@ -15,19 +15,19 @@ class SettingsTests(unittest.TestCase):
         data = copy.deepcopy(settings.DEFAULTS)
         data['controls']['key'] = {'cross': 'V', 'circle': 'Escape'}
         data['controls']['pad'] = {'cross': 'b', 'circle': 'a'}
-        data['display_mode'] = 'borderless'
         data['keyboard'] = False
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'settings.json'
             settings.save(data, path)
             self.assertEqual(settings.load(path), data)
-        env = settings.game_environment(data, {'GOWA_KEY_MAP': 'cross=Q', 'GCM_FLIP_MIN_MS': '300'})
+        env = settings.game_environment(data, {'GOWA_KEY_MAP': 'cross=Q', 'GCM_FLIP_MIN_MS': '300'},
+                                         ini={'display_mode': 'borderless'})
         self.assertEqual(env['GOWA_KEY_MAP'], 'cross=V,circle=Escape')
         self.assertEqual(env['GOWA_PAD_MAP'], 'cross=b,circle=a')
         self.assertEqual(env['PS3RECOMP_VK_FULLSCREEN'], '1')
         self.assertEqual(env['GOWA_KEYBOARD'], '0')
         self.assertEqual(env['GCM_FLIP_MIN_MS'], '300')
-        self.assertEqual(settings.game_environment(settings.DEFAULTS, {})['GOWA_KEY_MAP'], '')
+        self.assertEqual(settings.game_environment(settings.DEFAULTS, {}, ini={})['GOWA_KEY_MAP'], '')
 
     def test_interrupted_save_preserves_previous(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -41,7 +41,7 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(list(Path(folder).iterdir()), [path])
 
     def test_rejects_invalid_settings_without_destroying_file(self):
-        for change in ({'version': 2}, {'flip_min_ms': -1}, {'keyboard': 'false'},
+        for change in ({'version': 3}, {'diagnostics': {'flip_min_ms': -1}}, {'keyboard': 'false'},
                        {'controls': {'pad': {'l2': 'x'}}}, {'controls': {'key': {'cross': 'V,start=Q'}}},
                        {'controls': {'key': {'cross': 'Insert'}}}):
             with self.subTest(change=change), self.assertRaises(ValueError):
