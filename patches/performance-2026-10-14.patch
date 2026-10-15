@@ -1,0 +1,151 @@
+--- a/libs/audio/cellAudio.c
++++ b/libs/audio/cellAudio.c
+@@ -211,8 +211,8 @@
+ static int audio_backend_room(void)
+ {
+     if (!s_sdl_audio_dev) return -1;
+-    return SDL_GetQueuedAudioSize(s_sdl_audio_dev) / (2 * sizeof(float)) <
+-           CELL_AUDIO_BLOCK_SAMPLES * 4 ? CELL_AUDIO_BLOCK_SAMPLES : 0;
++    return SDL_GetQueuedAudioSize(s_sdl_audio_dev) / (2 * sizeof(float)) <=
++           CELL_AUDIO_BLOCK_SAMPLES * 3 ? CELL_AUDIO_BLOCK_SAMPLES : 0;
+ }
+ 
+ static void audio_backend_wait(void) { SDL_Delay(1); }
+@@ -603,21 +603,61 @@
+     return 0;
+ }
+ #else
++static uint64_t audio_monotonic_ns(void)
++{
++    struct timespec now;
++    clock_gettime(CLOCK_MONOTONIC, &now);
++    return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
++}
++
+ static void* audio_mix_thread_func(void* arg)
+ {
+     (void)arg;
+     printf("[cellAudio] Mixing thread started\n");
+ 
++    uint64_t anchor = audio_monotonic_ns(), blocks = 0;
++    const int report = getenv("AUDIO_RATE") != NULL;
++    uint64_t report_start = anchor, report_blocks = 0, silent_blocks = 0;
+     while (s_mix_thread_running) {
++        /* Backpressure BEFORE reading/clearing the guest ring. Sleeping 5 ms
++         * after every submission still overproduces a 5.333 ms audio period
++         * and lets SDL's unbounded queue accumulate latency indefinitely. */
++        const int room = audio_backend_room();
++        if (room >= 0 && room < CELL_AUDIO_BLOCK_SAMPLES) {
++            audio_backend_wait();
++            continue;
++        }
++        if (room < 0) {
++            const uint64_t now = audio_monotonic_ns();
++            const uint64_t offset = blocks * CELL_AUDIO_BLOCK_SAMPLES *
++                                    1000000000ull / CELL_AUDIO_SAMPLE_RATE;
++            const uint64_t due = anchor + offset;
++            if (now < due) { usleep(1000); continue; }
++            /* A debugger/scheduler pause must not consume a whole backlog
++             * of guest PCM in one burst. Keep fractional periods in offset. */
++            if (now - due > 50000000ull) anchor = now - offset;
++        }
++        blocks++;
+         audio_mix_one_block();
+         audio_backend_submit(s_mix_buffer, CELL_AUDIO_BLOCK_SAMPLES);
+         audio_notify_event_queues();
+ 
+-        u32 queued = audio_backend_queued_samples();
+-        if (queued > CELL_AUDIO_BLOCK_SAMPLES * 4) {
+-            usleep(5000);
+-        } else {
+-            usleep(2000);
++        if (report) {
++            report_blocks++;
++            int nonzero = 0;
++            for (u32 i = 0; i < CELL_AUDIO_BLOCK_SAMPLES * 2; i++)
++                if (s_mix_buffer[i] != 0.0f) { nonzero = 1; break; }
++            silent_blocks += !nonzero;
++            const uint64_t now = audio_monotonic_ns();
++            if (now - report_start >= 5000000000ull) {
++                fprintf(stderr, "[audio-rate] %.1f blocks/s (real time 187.5), "
++                        "silent %.1f%%, queued %.2f ms\n",
++                        report_blocks * 1e9 / (now - report_start),
++                        100.0 * silent_blocks / report_blocks,
++                        audio_backend_queued_samples() * 1000.0 / CELL_AUDIO_SAMPLE_RATE);
++                report_start = now;
++                report_blocks = silent_blocks = 0;
++            }
+         }
+     }
+ 
+--- a/runtime/spu/spu_dma.h
++++ b/runtime/spu/spu_dma.h
+@@ -724,8 +724,12 @@
+         /* POISON-DMA detector: does an SPU PUT write the singleton object region
+          * (0x40003000-0x40005000) or carry the 0xC708C708 poison? This host-side
+          * memcpy bypasses vm_write32/AWATCH, so it's the prime suspect for the
+-         * garbage fn-ptr fields that cause the 0xC708C708 vcall crash. */
+-        { uint32_t e = (uint32_t)ea;
++         * garbage fn-ptr fields that cause the 0xC708C708 vcall crash.
++         * This diagnostic scans the entire PUT payload; enable explicitly
++         * instead of making every audio/MLAA transfer pay for it. */
++        { static _Thread_local int trace = -1;
++          if (trace < 0) trace = getenv("SPU_DMA_POISON_TRACE") != NULL;
++          if (trace) { uint32_t e = (uint32_t)ea;
+           int hitregion = (e < 0x40005000u && e + size > 0x40003000u);
+           int haspoison = 0;
+           for (uint32_t o = 0; o + 4 <= size; o += 4) {
+@@ -737,7 +741,7 @@
+               if (_n++ < 12)
+                   fprintf(stderr, "[POISON-DMA] img%u PUT ea=0x%08X size=0x%X lsa=0x%X hitregion=%d haspoison=%d\n",
+                           spu->image_id, e, size, lsa, hitregion, haspoison);
+-          } }
++          } } }
+     }
+ 
+     return 0;
+@@ -842,13 +846,20 @@
+      * about to land. If the handler was supposed to fill in the claimed job's
+      * EA and did not, the elements read back empty and the transfer is a no-op
+      * -- which looks identical to "the pipeline never ran" from the PPU side. */
+-    { uint32_t _e = spu->list_stall_elem_lsa[t] & SPU_LS_MASK;
++    { static _Thread_local int trace = -1;
++      static _Thread_local unsigned samples;
++      if (trace < 0) trace = getenv("SPU_MFC_TRACE") != NULL;
++      /* Keep startup evidence; full element dumps are opt-in. A WWS
++       * workload can resume thousands of lists per second. */
++      if (trace || samples < 16) {
++      if (samples < 16) samples++;
++      uint32_t _e = spu->list_stall_elem_lsa[t] & SPU_LS_MASK;
+       fprintf(stderr, "[mfc-list] RESUME-ELEMS dest=0x%05X elems\n0x%05X:",
+               spu->list_stall_dest_lsa[t], _e);
+       for (uint32_t _o = 0; _o < 16 && (_e + _o) + 3 < SPU_LS_SIZE; _o += 4)
+           fprintf(stderr, " %02X%02X%02X%02X", spu->ls[_e+_o], spu->ls[_e+_o+1],
+                   spu->ls[_e+_o+2], spu->ls[_e+_o+3]);
+-      fprintf(stderr, "\n"); }
++      fprintf(stderr, "\n"); } }
+     int rc = mfc_run_list(spu, spu->list_stall_elem_lsa[t], spu->list_stall_remaining[t],
+                           spu->list_stall_dest_lsa[t], spu->list_stall_ea_base[t],
+                           spu->list_stall_cmd[t], t);
+--- a/runtime/spu/spu_channels.c
++++ b/runtime/spu/spu_channels.c
+@@ -2111,7 +2111,11 @@
+             /* cellSpursModulePoll: report "no contention — keep running".
+              * (One virtual SPU per workload here, so nothing ever preempts.) */
+             unsigned n = ++g_spurs_pm_polls;
+-            if (n <= 4 || (n % 4096) == 0)
++            /* The poll count resets on every policy run, so "first four"
++             * alone logs continually. Match the exit-to-kernel trace gate. */
++            static _Thread_local int trace = -1;
++            if (trace < 0) trace = getenv("SPURS_PM_TRACE") != NULL;
++            if (trace && (n <= 4 || (n % 4096) == 0))
+                 fprintf(stderr, "[spurs-pm] poll #%u (r3=0x%08X) -> continue\n",
+                         n, ctx->gpr[3]._u32[0]);
+             ctx->gpr[3] = spu_make_preferred_u32(0);
+@@ -2795,4 +2799,4 @@
+ 
+ #ifdef __cplusplus
+ }
+-#endif
+\ No newline at end of file
++#endif

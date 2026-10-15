@@ -1,0 +1,48 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "linux-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "PS3RECOMP_DIR": "${sourceDir}/../ps3recomp",
+        "RECOMP_DIR": "${sourceDir}/recompiled",
+        "PS3RECOMP_FFMPEG_RUNTIME": "ON"
+      }
+    },
+    {
+      "name": "linux-vulkan",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "PS3RECOMP_RSX_VULKAN": "ON"
+      }
+    },
+    {
+      "name": "linux-vulkan-debug",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "PS3RECOMP_RSX_VULKAN": "ON"
+      }
+    },
+    {
+      "name": "linux-null",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "PS3RECOMP_RSX_VULKAN": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "linux-vulkan", "configurePreset": "linux-vulkan" },
+    { "name": "linux-vulkan-debug", "configurePreset": "linux-vulkan-debug" },
+    { "name": "linux-null", "configurePreset": "linux-null" }
+  ]
+}

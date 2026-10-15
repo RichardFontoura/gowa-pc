@@ -1,0 +1,13 @@
+--- a/main.cpp
++++ b/main.cpp
+@@ -249,6 +249,10 @@
+              * present freely, so the window is not blank during boot. */
+             unsigned fc = cellGcm_flip_request_count();
+             if (fc != last_flip) {
++                /* This drain reached a flip and left its pending bit set.
++                 * Consume it here too, or the next tick presents this same
++                 * completed frame again before doing any further work. */
++                (void)cellGcm_take_flip_pending();
+                 present_guest_frame();
+                 last_flip = fc;
+             } else if (fc == 0) {
