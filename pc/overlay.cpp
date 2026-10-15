@@ -57,6 +57,10 @@ struct Stats {
     uint32_t present_sample_count = 0;
     uint64_t spu_sample_ns = 0;
     unsigned long long spu_sample_busy = 0;
+    rsx_vk_shader_stats shaders{};
+    float shader_worst_ms = 0;
+    float shader_window_ms = 0;
+    uint64_t shader_sample_ns = 0;
 };
 
 struct PadKey {
@@ -87,7 +91,7 @@ constexpr const char* size_labels[] = {"1280x720", "1600x900", "1920x1080", "Mon
 constexpr int size_presets[][2] = {{1280, 720}, {1600, 900}, {1920, 1080}};
 constexpr const char* item_labels[] = {"FPS do jogo", "Tempo de quadro (média e pior)",
                                        "Gráfico do tempo de quadro", "FPS de apresentação",
-                                       "Ocupação do SPU (EDGE)"};
+                                       "Ocupação do SPU (EDGE)", "Compilação de shaders"};
 constexpr const char* button_labels[] = {"Select", "L3", "R3", "Start", "Direcional ↑", "Direcional →",
                                          "Direcional ↓", "Direcional ←", "L2", "R2", "L1", "R1",
                                          "Triângulo", "Círculo", "Cross (X)", "Quadrado"};
@@ -298,6 +302,21 @@ void on_swapchain_ready(const rsx_vk_overlay_context* ctx, const rsx_vk_overlay_
     }
 }
 
+void update_shader_stats(uint64_t now) {
+    rsx_vulkan_backend_shader_stats(&stats.shaders);
+    stats.shader_window_ms = std::max(stats.shader_window_ms, float(stats.shaders.frame_ms));
+    if (now - stats.shader_sample_ns >= 1000000000ull) {
+        stats.shader_worst_ms = stats.shader_window_ms;
+        stats.shader_window_ms = 0;
+        stats.shader_sample_ns = now;
+    }
+}
+
+void draw_shader_note() {
+    if (stats.shaders.pending)
+        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Compilando shaders: %u", stats.shaders.pending);
+}
+
 void update_stats(uint64_t now) {
     const uint32_t total = flip_total.load(std::memory_order_acquire);
     const uint32_t n = std::min<uint32_t>(total, flip_ring_size - 8);
@@ -344,6 +363,7 @@ void update_stats(uint64_t now) {
         stats.spu_sample_ns = now;
         stats.spu_sample_busy = busy;
     }
+    update_shader_stats(now);
 }
 
 float display_scale() {
@@ -391,7 +411,28 @@ void draw_overlay(const gowa::GameSettings& s) {
             else
                 ImGui::TextUnformatted("EDGE (SPU) --");
         }
+        if (s.overlay_items & gowa::item_shaders)
+            ImGui::Text("Shaders %s ms (%u pipelines)", decimal(stats.shader_worst_ms, 1).c_str(),
+                        stats.shaders.pipelines);
+        draw_shader_note();
     }
+    ImGui::End();
+    ImGui::PopFont();
+}
+
+void draw_compiling_note(const gowa::GameSettings& s) {
+    const float pad = 10.0f * display_scale();
+    const ImVec2 size = ImGui::GetIO().DisplaySize;
+    const bool right = s.corner == gowa::Corner::top_right || s.corner == gowa::Corner::bottom_right;
+    const bool bottom = s.corner == gowa::Corner::bottom_left || s.corner == gowa::Corner::bottom_right;
+    ImGui::SetNextWindowPos(ImVec2(right ? size.x - pad : pad, bottom ? size.y - pad : pad),
+                            ImGuiCond_Always, ImVec2(right ? 1.0f : 0.0f, bottom ? 1.0f : 0.0f));
+    ImGui::SetNextWindowBgAlpha(float(s.overlay_opacity) / 100.0f);
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav |
+        ImGuiWindowFlags_NoInputs;
+    ImGui::PushFont(nullptr, base_font_px * display_scale());
+    if (ImGui::Begin("##gowa_shader_note", nullptr, flags)) draw_shader_note();
     ImGui::End();
     ImGui::PopFont();
 }
@@ -645,7 +686,10 @@ void draw_menu(gowa::GameSettings& s) {
 int on_record(VkCommandBuffer cmd, uint32_t image_index, void*) {
     present_total.fetch_add(1, std::memory_order_relaxed);
     const bool menu = menu_wanted.load(std::memory_order_relaxed);
-    if (!overlay_visible.load(std::memory_order_relaxed) && !menu) {
+    rsx_vk_shader_stats shader_now;
+    rsx_vulkan_backend_shader_stats(&shader_now);
+    const bool compiling = shader_now.pending > 0;
+    if (!overlay_visible.load(std::memory_order_relaxed) && !menu && !compiling) {
         renderer.last_frame_ns = 0;
         menu_drawn = false;
         return 0;
@@ -670,6 +714,7 @@ int on_record(VkCommandBuffer cmd, uint32_t image_index, void*) {
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();
     if (s.show_fps || menu) draw_overlay(s);
+    else if (compiling) draw_compiling_note(s);
     if (menu) draw_menu(s);
     menu_drawn = menu;
     ImGui::Render();

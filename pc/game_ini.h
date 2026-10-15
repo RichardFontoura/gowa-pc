@@ -11,6 +11,7 @@ enum OverlayItem : unsigned {
     item_graph = 1u << 2,
     item_present = 1u << 3,
     item_spu = 1u << 4,
+    item_shaders = 1u << 5,
 };
 
 struct GameSettings {

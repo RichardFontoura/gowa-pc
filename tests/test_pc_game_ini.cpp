@@ -58,6 +58,8 @@ int main() {
            "overlay_corner=br\nwindow_size=1600x900\ndisplay_mode=fullscreen\nvsync=0\noverlay_opacity=40\n");
     assert(gowa::load_game_ini(path).settings == ini.settings);
 
+    assert(gowa::parse_overlay_items("fps,shaders") == (gowa::item_fps | gowa::item_shaders));
+    assert(gowa::format_overlay_items(gowa::item_shaders) == "shaders");
     unlink(path.c_str());
     rmdir((std::string(folder) + "/sub").c_str());
     rmdir(folder);

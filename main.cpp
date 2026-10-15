@@ -126,6 +126,7 @@ extern "C" int  rsx_metal_backend_pump_messages(void);
 extern "C" int  rsx_vulkan_backend_init(uint32_t w, uint32_t h, const char* title);
 extern "C" void rsx_vulkan_backend_present(void);
 extern "C" int  rsx_vulkan_backend_pump_messages(void);
+extern "C" void rsx_vulkan_backend_save_shader_cache(void);
 #  define rsx_backend_init    rsx_vulkan_backend_init
 #  define rsx_backend_present rsx_vulkan_backend_present
 #  define rsx_backend_pump    rsx_vulkan_backend_pump_messages
@@ -186,10 +187,34 @@ static void present_guest_frame(void)
     InterlockedIncrement(&g_frames_presented);
 }
 
+#ifdef PS3RECOMP_RSX_VULKAN
+static void configure_shader_cache(void)
+{
+    const char* cache = getenv("GOWA_SHADER_CACHE");
+    if (cache && cache[0] == '0') {
+        setenv("RSX_VK_SHADER_CACHE", "0", 1);
+    } else if (!getenv("RSX_VK_SHADER_CACHE_DIR")) {
+        char dir[1024] = "";
+        const char* xdg = getenv("XDG_CACHE_HOME");
+        const char* home = getenv("HOME");
+        if (xdg && *xdg) snprintf(dir, sizeof dir, "%s/gowa-pc", xdg);
+        else if (home && *home) snprintf(dir, sizeof dir, "%s/.cache/gowa-pc", home);
+        if (dir[0]) setenv("RSX_VK_SHADER_CACHE_DIR", dir, 1);
+    }
+    const char* async = getenv("GOWA_ASYNC_SHADERS");
+    if (async && *async) setenv("RSX_VK_ASYNC_SHADERS", async, 1);
+    const char* warmup = getenv("GOWA_SHADER_WARMUP");
+    if (warmup && *warmup) setenv("RSX_VK_SHADER_WARMUP", warmup, 1);
+}
+#endif
+
 static DWORD WINAPI frame_clock(LPVOID)
 {
     const char* title = getenv("PS3_TITLE");
     if (!title || !*title) title = "God of War: Ascension";
+#ifdef PS3RECOMP_RSX_VULKAN
+    configure_shader_cache();
+#endif
 
     int rsx_ok = (rsx_backend_init(WINDOW_WIDTH, WINDOW_HEIGHT, title) == 0);
     fprintf(stderr, "[rsx] %s backend init %s\n", RSX_BACKEND_NAME,
@@ -236,6 +261,7 @@ static DWORD WINAPI frame_clock(LPVOID)
             if (rsx_backend_pump() != 0) {
 #ifdef PS3RECOMP_RSX_VULKAN
                 gowa_input_stop();
+                rsx_vulkan_backend_save_shader_cache();
 #endif
                 // The guest has no host-window lifecycle. End the process instead
                 // of leaving all guest workers running without a window.
