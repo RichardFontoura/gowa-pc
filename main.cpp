@@ -153,7 +153,10 @@ extern "C" int  rsx_null_backend_pump_messages(void);
 #define STACK_TOP     0x0FF00000u      /* main-thread stack, below the 0x10000000 segment */
 #define WINDOW_WIDTH  1280
 #define WINDOW_HEIGHT 720
+/// Synthesized vblank period in microseconds (1/59.94 Hz).
 #define VBLANK_PERIOD_US 16683ull
+/// Minimum interval between the frame clock's "slow" work (window event pump,
+/// input and overlay ticks, idle presents) when the fast FIFO poll is enabled.
 #define FRAME_CLOCK_SLOW_US 4000ull
 
 /* ---------------------------------------------------------------------------
@@ -174,11 +177,16 @@ static volatile LONG g_frames_presented = 0;
  * guest actually finished. The presents made before the guest's first flip, so
  * a fresh window is not left blank through a long boot, carry no guest frame
  * and are deliberately not counted. */
+/// Number of guest frames presented so far. Read by toolkit tests and
+/// diagnostics to tell whether a boot reached its first rendered frames.
 extern "C" unsigned ppu_boot_frames_presented(void)
 {
     return (unsigned)g_frames_presented;
 }
 
+/// Presents the frame the guest just flipped, records the flip for the
+/// overlay's FPS statistics (Vulkan build) and bumps g_frames_presented.
+/// Frame clock thread only.
 static void present_guest_frame(void)
 {
     rsx_backend_present();
@@ -191,6 +199,13 @@ static void present_guest_frame(void)
 }
 
 #ifdef PS3RECOMP_RSX_VULKAN
+/// Translates the port's shader environment variables into the ones the
+/// ps3recomp Vulkan backend reads. Must run before rsx_backend_init().
+/// - `GOWA_SHADER_CACHE=0` disables the on-disk pipeline cache (`RSX_VK_SHADER_CACHE=0`).
+/// - Otherwise, unless `RSX_VK_SHADER_CACHE_DIR` is already set, the cache goes to
+///   `$XDG_CACHE_HOME/gowa-pc` or `$HOME/.cache/gowa-pc`.
+/// - `GOWA_ASYNC_SHADERS` and `GOWA_SHADER_WARMUP` are copied verbatim to
+///   `RSX_VK_ASYNC_SHADERS` and `RSX_VK_SHADER_WARMUP` when non-empty.
 static void configure_shader_cache(void)
 {
     const char* cache = getenv("GOWA_SHADER_CACHE");
@@ -211,18 +226,34 @@ static void configure_shader_cache(void)
 }
 #endif
 
+/// Frame clock loop sleep in microseconds, from `GOWA_RSX_POLL_US` (default 250).
+/// A short poll lets the GCM FIFO be drained and flips presented soon after
+/// the guest submits them; 0 selects a 4 ms Sleep with all work done on
+/// every iteration.
 static unsigned frame_clock_poll_us(void)
 {
     const char* e = getenv("GOWA_RSX_POLL_US");
     return e && *e ? (unsigned)strtoul(e, NULL, 10) : 250u;
 }
 
+/// Monotonic time in microseconds (std::chrono::steady_clock).
 static unsigned long long frame_clock_now_us(void)
 {
     return (unsigned long long)std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
+/// Host thread that stands in for the RSX display hardware. It opens the
+/// window (title from `PS3_TITLE`), starts the PC input adapter and overlay
+/// in the Vulkan build if the window opened, then loops forever:
+/// - fires one vblank + flip tick per elapsed VBLANK_PERIOD_US, catching up
+///   at most 240 ticks before resynchronizing to the current time;
+/// - presents pending guest flips and drains the GCM FIFO every iteration;
+/// - at most every FRAME_CLOCK_SLOW_US, pumps window events, ticks input and
+///   the overlay, and re-presents the last image while the guest has not
+///   flipped yet so the window is not blank during boot.
+/// When the backend reports a quit request (window closed), the Vulkan build
+/// stops input and saves the shader cache, then the process exits with 0.
 static DWORD WINAPI frame_clock(LPVOID)
 {
     const char* title = getenv("PS3_TITLE");
@@ -308,6 +339,9 @@ static DWORD WINAPI frame_clock(LPVOID)
  * <root>/PS3_GAME/USRDIR/EBOOT.elf -> <root>. $PS3_VFS_ROOT overrides. */
 static char s_vfs_root[1024];
 
+/// Sets ppu_vfs_root, the host directory that holds PS3_GAME, from
+/// `$PS3_VFS_ROOT` or by stripping three path components from @p eboot
+/// (falling back to "."). Backslashes are normalized to '/'.
 static void derive_vfs_root(const char* eboot)
 {
     const char* env = getenv("PS3_VFS_ROOT");
@@ -329,6 +363,8 @@ static void derive_vfs_root(const char* eboot)
  * costs no commit, and commit each 64 KB page on first access. Every 32-bit
  * guest offset is then valid, so a garbage guest pointer reads zero instead of
  * killing the process. Faults outside the arena fall through untouched. */
+/// Vectored exception handler that commits the faulting 64 KB page of the
+/// guest arena and resumes; any other fault is passed on.
 static LONG WINAPI vm_commit_veh(EXCEPTION_POINTERS* ep)
 {
     if (ep->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
@@ -344,6 +380,12 @@ static LONG WINAPI vm_commit_veh(EXCEPTION_POINTERS* ep)
 }
 #endif
 
+/// Allocates the flat guest address space and publishes it as vm_base.
+/// Windows: reserves VM_SIZE, commits on demand through vm_commit_veh and sets
+/// ppu_vm_size to 0 (whole 32-bit space backed, no bounds check).
+/// POSIX: maps 0xE0000000 bytes with MAP_NORESERVE, so pages cost memory only
+/// when touched, and sets ppu_vm_size to that size so accesses past it are
+/// bounds-checked by the runtime. Returns false if the allocation fails.
 static bool alloc_guest_vm(void)
 {
 #ifdef _WIN32
@@ -363,6 +405,9 @@ static bool alloc_guest_vm(void)
 /* ---------------------------------------------------------------------------
  * Main
  * -----------------------------------------------------------------------*/
+/// g_ps3_guest_caller implementation: runs the guest function described by
+/// the OPD (function descriptor) at @p opd with up to eight arguments,
+/// discarding the return value.
 static void harness_guest_caller(uint32_t opd, uint64_t a0, uint64_t a1,
                                  uint64_t a2, uint64_t a3, uint64_t a4,
                                  uint64_t a5, uint64_t a6, uint64_t a7)
@@ -370,8 +415,18 @@ static void harness_guest_caller(uint32_t opd, uint64_t a0, uint64_t a1,
     ppu_guest_call(opd, a0, a1, a2, a3, a4, a5, a6, a7);
 }
 
+/// Boots the title: argv[1] is the decrypted PPU ELF (EBOOT). Sets stdout to
+/// line buffering and stderr to unbuffered so logs survive a kill, allocates
+/// guest memory, loads the ELF, initializes cellGame from PARAM.SFO, registers
+/// the lifted code and HLE modules, installs the PC input adapter (Vulkan
+/// build; `PS3RECOMP_VK_KEEP_ESCAPE` defaults to 1 so Escape reaches the game
+/// instead of closing the window), starts the frame clock thread and runs the
+/// guest entry point on this thread. Returns 2 on bad usage, 1 on boot
+/// failure, otherwise the guest's exit status.
 int main(int argc, char** argv)
 {
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
     if (argc < 2) {
         printf("usage: %s <PPU ELF>\n", argv[0]);
         return 2;
@@ -383,7 +438,6 @@ int main(int argc, char** argv)
      * inflates every shorter wait the title makes and throttles the whole
      * thing. POSIX timers are already fine-grained. */
     timeBeginPeriod(1);
-    setvbuf(stdout, NULL, _IONBF, 0);   /* unbuffered: do not lose prints on a kill */
 #endif
 
     printf("=== ps3recomp game runner ===\n");

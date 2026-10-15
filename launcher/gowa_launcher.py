@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+"""Tk launcher for the God of War: Ascension PC port.
+
+Shows a window with pages to edit the launcher settings (``settings.json``,
+see :mod:`settings`) and the shared game options (``game.ini``, see
+:mod:`game_ini`), backs up the save data before each run, starts the game
+through :class:`run_log.RunLog` and follows its log live. All work happens
+on the Tk main loop: a 100 ms timer (:meth:`Launcher.tick`) polls the game
+process and its log; no threads are used.
+
+Run without arguments for the GUI, or with ``--play`` to start the game
+directly with the saved configuration (the launcher process is replaced by
+the game command).
+"""
+
 import argparse
 import copy
 import os
@@ -9,6 +23,7 @@ import sys
 from pathlib import Path
 
 import game_ini
+from run_log import RunLog, PREFIX, classify
 from keynames import sdl_key_name, sdl_mouse_name
 from save_backup import backup, label as backup_label, list_backups, restore
 from settings import (PORT, CONFIG_FILE, CONFIG_DIR, GAME_INI, BACKUP_DIR, SAVEDATA_DIR, CONTROLS,
@@ -16,10 +31,15 @@ from settings import (PORT, CONFIG_FILE, CONFIG_DIR, GAME_INI, BACKUP_DIR, SAVED
                       game_environment, game_command, tool_available, duplicate_bindings,
                       stick_conflicts, clear_shader_cache, SHADER_CACHE_DIR)
 
+# Color palette of the window.
 BG, PANEL, CARD, LINE = '#0d0b0b', '#161212', '#1d1717', '#2a2222'
 TEXT, MUTED, ACCENT, ACCENT_HI = '#e6e0d8', '#8a817a', '#a4161a', '#c81e25'
+# Page titles in sidebar order; each must have a build_* method creating it.
 PAGES = ('Início', 'Jogo', 'Gráficos', 'Controles', 'Avançado', 'Diagnóstico', 'Log')
+# Maximum number of lines kept in the Log page's text widget.
 LOG_LIMIT = 6000
+# (pattern, status text) pairs: a game output line matching a pattern updates the
+# status bar; regex groups are substituted into the text with str.format.
 STATUS_MARKERS = (
     (re.compile(r'^erro: (.*)'), 'Erro ao iniciar: {0}'),
     (re.compile(r'^\[boot\] VFS root'), 'Carregando o jogo…'),
@@ -27,6 +47,7 @@ STATUS_MARKERS = (
     (re.compile(r'^\[rsx\] .*backend init OK'), 'Jogo aberto'),
     (re.compile(r'^\[rsx\] .*backend init FAILED'), 'Falha ao abrir a janela do jogo'),
 )
+# Value -> label tables for the comboboxes built with Launcher.choice().
 DISPLAY_LABELS = {'windowed': 'Janela', 'borderless': 'Tela cheia sem bordas', 'fullscreen': 'Tela cheia'}
 SIZE_LABELS = {'1280x720': '1280 × 720', '1600x900': '1600 × 900', '1920x1080': '1920 × 1080',
                'monitor': 'Tamanho do monitor'}
@@ -42,6 +63,12 @@ PARALLEL_LABELS = {'Padrão': 'Padrão (7,13,14,15,16)', 'Seguro': 'Seguro (tudo
 
 
 def status_for_line(line):
+    """Return the status bar text for a log line, or ``None`` if it is not a milestone.
+
+    The ``session.log`` timestamp prefix is removed before matching against
+    ``STATUS_MARKERS``.
+    """
+    line = PREFIX.sub('', line)
     for pattern, text in STATUS_MARKERS:
         match = pattern.search(line)
         if match:
@@ -50,12 +77,28 @@ def status_for_line(line):
 
 
 def open_path(path):
+    """Create the directory ``path`` if needed and open it with ``xdg-open``.
+
+    ``xdg-open`` runs detached in its own session with its output discarded.
+
+    Raises:
+        OSError: If the directory cannot be created or ``xdg-open`` cannot be started.
+    """
     Path(path).mkdir(parents=True, exist_ok=True)
     subprocess.Popen(['xdg-open', str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      start_new_session=True)
 
 
 def backup_saves():
+    """Back up the save data before a run and describe the result.
+
+    Copies ``SAVEDATA_DIR`` into ``BACKUP_DIR`` (keeping the newest copies,
+    see :func:`save_backup.backup`). A failure is reported, not raised, so
+    the game still starts.
+
+    Returns:
+        A ``[launcher]`` log line (in Portuguese) for the run log.
+    """
     try:
         made = backup(SAVEDATA_DIR, BACKUP_DIR)
     except OSError as e:
@@ -66,11 +109,34 @@ def backup_saves():
 
 
 class Launcher:
+    """The launcher window: settings pages, save backups and the game run.
+
+    Settings are edited through Tk variables and only written to disk by
+    :meth:`save` (button "Salvar", before "JOGAR" and when the window
+    closes). At most one game process runs at a time; :attr:`generation`
+    is incremented for every run so delayed callbacks can tell runs apart.
+    """
+
     def __init__(self, root):
+        """Build the whole window inside ``root`` and start the poll timer.
+
+        Imports ``tkinter`` lazily, loads ``settings.json`` and ``game.ini``,
+        configures the ``clam`` ttk theme with the launcher palette, creates
+        the sidebar with one button per page, the bottom bar (status text,
+        "JOGAR", "Parar", "Salvar") and every page, shows "Início" and
+        schedules :meth:`tick` after 100 ms. Closing the window calls
+        :meth:`close`.
+
+        Raises:
+            ValueError: If ``settings.json`` is invalid.
+            OSError: If the settings cannot be read.
+        """
         import tkinter as tk
         from tkinter import ttk, messagebox
         self.tk, self.ttk, self.messagebox, self.root = tk, ttk, messagebox, root
         self.process = self.log_reader = self.log_writer = None
+        self.run_log = None
+        self.logging_error_seen = False
         self.closing = False
         self.generation = 0
         self.partial = ''
@@ -136,6 +202,16 @@ class Launcher:
         root.after(100, self.tick)
 
     def page(self, name, description):
+        """Create a scrollable page titled ``name`` and register it in :attr:`pages`.
+
+        The page is a canvas with a vertical scrollbar holding a padded frame;
+        the frame's width follows the canvas and the scroll region follows the
+        frame's size. The title and the ``description`` note are added at the
+        top. The page is not shown until :meth:`show` is called.
+
+        Returns:
+            The inner frame that page builders fill with widgets.
+        """
         outer = self.ttk.Frame(self.content)
         canvas = self.tk.Canvas(outer, bg=PANEL, highlightthickness=0)
         scroll = self.ttk.Scrollbar(outer, orient='vertical', command=canvas.yview)
@@ -153,6 +229,11 @@ class Launcher:
         return frame
 
     def note(self, frame, text):
+        """Pack a muted, left-aligned paragraph into ``frame`` and return its label.
+
+        The wrap length tracks the label's width so the text reflows when the
+        window is resized.
+        """
         label = self.tk.Label(frame, text=text, bg=PANEL, fg=MUTED, justify='left', anchor='w',
                               wraplength=700, font=('DejaVu Sans', 10))
         label.pack(fill='x', pady=(0, 18))
@@ -160,16 +241,39 @@ class Launcher:
         return label
 
     def section(self, frame, title):
+        """Pack an upper-case accent-colored section heading into ``frame``."""
         self.tk.Label(frame, text=title.upper(), bg=PANEL, fg=ACCENT_HI, anchor='w',
                       font=('DejaVu Sans', 10, 'bold')).pack(fill='x', pady=(14, 4))
 
     def var(self, name):
+        """Return the Tk variable for the top-level setting ``name``, creating it on first use.
+
+        A ``BooleanVar`` is used for boolean settings and a ``StringVar``
+        otherwise, initialized from :attr:`app`. :meth:`collect` reads every
+        variable created here back into the settings.
+        """
         if name not in self.vars:
             cls = self.tk.BooleanVar if isinstance(self.app[name], bool) else self.tk.StringVar
             self.vars[name] = cls(value=self.app[name])
         return self.vars[name]
 
     def choice(self, frame, title, var, options, command=None):
+        """Add a labelled read-only combobox that edits ``var`` through display labels.
+
+        ``var`` holds the stored value while the combobox shows the matching
+        label from ``options``; a value without a label is shown as-is. The
+        displayed label follows later changes to ``var``.
+
+        Args:
+            frame: Parent frame.
+            title: Text shown to the left of the combobox.
+            var: Tk variable holding the value.
+            options: Mapping of value (as ``str``) to display label.
+            command: Optional callable run after the user picks an entry.
+
+        Returns:
+            The ``ttk.Combobox``.
+        """
         row = self.ttk.Frame(frame)
         row.pack(fill='x', pady=6)
         self.ttk.Label(row, text=title, width=30).pack(side='left')
@@ -179,6 +283,7 @@ class Launcher:
         var.trace_add('write', lambda *_: label.set(options.get(str(var.get()), str(var.get()))))
 
         def selected(_event):
+            """Store the value whose label was picked and run ``command``."""
             var.set(next(k for k, v in options.items() if v == box.get()))
             if command:
                 command()
@@ -187,6 +292,11 @@ class Launcher:
         return box
 
     def spin(self, frame, title, var, low, high, step):
+        """Add a labelled spinbox bound to ``var`` (range ``low``..``high`` by ``step``) and return its row.
+
+        The spinbox does not enforce the range on typed text; values are
+        checked when the settings are validated on save.
+        """
         row = self.ttk.Frame(frame)
         row.pack(fill='x', pady=6)
         self.ttk.Label(row, text=title, width=30).pack(side='left')
@@ -194,11 +304,13 @@ class Launcher:
         return row
 
     def check(self, frame, text, var, enabled=True):
+        """Pack a checkbutton bound to ``var`` into ``frame``, disabled when ``enabled`` is false, and return it."""
         button = self.ttk.Checkbutton(frame, text=text, variable=var, state='normal' if enabled else 'disabled')
         button.pack(anchor='w')
         return button
 
     def build_pages(self):
+        """Create every page listed in ``PAGES``."""
         self.build_home()
         self.build_game()
         self.build_graphics()
@@ -208,7 +320,8 @@ class Launcher:
         self.build_log()
 
     def build_home(self):
-        f = self.page('Início', 'O mesmo padrão de configuração dos ports God of War no PC.')
+        """Create the "Início" page: title banner and short usage notes."""
+        f =self.page('Início', 'O mesmo padrão de configuração dos ports God of War no PC.')
         self.tk.Label(f, text='GOD OF WAR\nASCENSION', bg=CARD, fg=TEXT,
                       font=('DejaVu Serif', 32), pady=45).pack(fill='x', pady=20)
         self.note(f, 'Continue a jornada de Kratos. Configure seus controles antes de jogar.\n\n'
@@ -216,7 +329,15 @@ class Launcher:
                      'Port em desenvolvimento: a campanha completa ainda não foi validada.')
 
     def build_game(self):
-        f = self.page('Jogo', 'Instalação preparada neste workspace.')
+        """Create the "Jogo" page.
+
+        Reports whether the built executable, the decrypted ELF, the extracted
+        disc and the update are present (checked once, when the page is
+        built), and adds the save backup controls: a combobox of backups, a
+        "Restaurar" button (:meth:`restore_saves`) and a button that opens
+        the savedata folder.
+        """
+        f =self.page('Jogo', 'Instalação preparada neste workspace.')
         for title, path in (('Executável', PORT / 'build/linux-vulkan/GowAscensionRecomp'),
                             ('Jogo', PORT / 'game/EBOOT.ELF'), ('Disco', PORT / 'game/disc/PS3_GAME'),
                             ('Atualização', PORT / 'game/update')):
@@ -238,7 +359,15 @@ class Launcher:
         self.refresh_backups()
 
     def build_graphics(self):
-        f = self.page('Gráficos', 'Gravado em game.ini, o mesmo arquivo do menu do jogo. Vale na próxima execução.')
+        """Create the "Gráficos" page, which edits ``game.ini`` options.
+
+        Creates :attr:`ini_vars` (one Tk variable per ``game.ini`` key except
+        ``overlay_items``) and :attr:`item_vars` (one boolean per known
+        overlay item), fills them with :meth:`apply_ini`, and adds the display,
+        FPS overlay and external tool (MangoHud, GameMode) controls. A tool
+        that is not installed is shown disabled.
+        """
+        f =self.page('Gráficos', 'Gravado em game.ini, o mesmo arquivo do menu do jogo. Vale na próxima execução.')
         self.ini_vars = {
             'display_mode': self.tk.StringVar(), 'window_size': self.tk.StringVar(),
             'vsync': self.tk.BooleanVar(), 'show_fps': self.tk.BooleanVar(),
@@ -275,6 +404,13 @@ class Launcher:
             self.check(f, f'{text} — {hint}' + ('' if found else ' (não instalado)'), self.var(name), found)
 
     def apply_ini(self):
+        """Copy :attr:`ini` into the "Gráficos" widgets.
+
+        A custom window size not among the presets is added to the size
+        options (and to the combobox once it exists). Overlay items the
+        launcher does not know are remembered in :attr:`extra_items` so
+        :meth:`collect_ini` writes them back unchanged.
+        """
         for key, var in self.ini_vars.items():
             var.set(self.ini[key])
         if self.ini['window_size'] not in self.size_options:
@@ -286,11 +422,21 @@ class Launcher:
         self.extra_items = [i for i in self.ini['overlay_items'] if i not in game_ini.OVERLAY_ITEMS]
 
     def reload_ini(self):
+        """Re-read ``game.ini`` (the game may have rewritten it) and refresh the widgets."""
         self.ini = game_ini.read(GAME_INI)
         self.apply_ini()
 
     def build_controls(self):
-        f = self.page('Controles', 'Teclado, mouse e controle compartilham o jogador 1. Alterações valem ao '
+        """Create the "Controles" page with the binding table.
+
+        Each row of ``CONTROLS`` gets two entries (:attr:`key_vars`, up to two
+        keys or mouse buttons) and, when the button can be remapped on the
+        pad, a combobox of controller buttons (:attr:`pad_boxes`, value kept
+        in :attr:`pad_vars`). Entries are wired to the click-to-capture
+        handlers, and every edit re-runs :meth:`check_duplicates`, whose
+        warnings appear in the label below the table.
+        """
+        f =self.page('Controles', 'Teclado, mouse e controle compartilham o jogador 1. Alterações valem ao '
                                    'reiniciar o jogo.')
         self.choice(f, 'Nomes no controle', self.var('pad_style'),
                     {'playstation': 'PlayStation', 'xbox': 'Xbox'}, self.relabel)
@@ -341,6 +487,17 @@ class Launcher:
         self.ttk.Button(f, text='Restaurar controles padrão', command=self.reset_controls).pack(anchor='w')
 
     def capture_click(self, event, var, title):
+        """Handle a mouse press on a binding entry while capture mode is on.
+
+        The first click arms the entry (highlighted style, keyboard focus and
+        a prompt in the status bar), disarming any other armed entry. A
+        further click on the armed entry binds that mouse button to ``var``
+        if it is supported. With capture mode off the event is left to Tk so
+        the entry can be edited as text.
+
+        Returns:
+            ``'break'`` to stop Tk's default handling, or ``None``.
+        """
         if not self.capture.get():
             return None
         if self.capturing is event.widget:
@@ -358,6 +515,16 @@ class Launcher:
         return 'break'
 
     def capture_key(self, event, var):
+        """Handle a key press on the armed binding entry.
+
+        Backspace clears the binding; a key with an SDL name that is not
+        reserved is stored in ``var``. Both end the capture. Unsupported or
+        reserved keys only show a message and keep the entry armed. Key
+        presses on an entry that is not armed are left to Tk.
+
+        Returns:
+            ``'break'`` while capturing, otherwise ``None``.
+        """
         if self.capturing is not event.widget:
             return None
         if event.keysym == 'BackSpace':
@@ -375,12 +542,14 @@ class Launcher:
         return 'break'
 
     def end_capture(self, widget):
+        """Disarm ``widget`` if it is the entry being captured and reset the status bar."""
         if self.capturing is widget:
             self.capturing = None
             widget.configure(style='TEntry')
             self.status.set('Pronto')
 
     def current_keys(self):
+        """Return the keyboard map from the entries as ``{button id: 'Key1|Key2'}``, omitting empty rows."""
         keys = {}
         for name, pair in self.key_vars.items():
             parts = [v.get().strip() for v in pair if v.get().strip()]
@@ -389,6 +558,11 @@ class Launcher:
         return keys
 
     def check_duplicates(self):
+        """Show warnings for keys bound twice or also used by an analog stick.
+
+        Only informational: saving is not blocked. Does nothing while the
+        page is still being built and the warning label does not exist yet.
+        """
         if not hasattr(self, 'warning'):
             return
         titles = {name: title for name, title, _, _ in CONTROLS}
@@ -399,15 +573,18 @@ class Launcher:
         self.warning.configure(text='\n'.join(lines))
 
     def select_pad(self, name, title):
+        """Store the controller button whose label (in the current pad style) is ``title`` for button ``name``."""
         self.pad_vars[name] = next(k for k, v in PAD_NAMES[self.var('pad_style').get()].items() if v == title)
 
     def relabel(self):
+        """Refresh the controller comboboxes with the button names of the selected pad style."""
         labels = PAD_NAMES[self.var('pad_style').get()]
         for name, box in self.pad_boxes.items():
             box.configure(values=list(labels.values()))
             box.set(labels[self.pad_vars[name]])
 
     def reset_controls(self):
+        """Put the default keyboard and controller bindings back in the table (saved only on "Salvar")."""
         for name, _, key, pad in CONTROLS:
             parts = (key.split('|') + [''])[:2]
             for var, value in zip(self.key_vars[name], parts):
@@ -417,13 +594,22 @@ class Launcher:
         self.relabel()
 
     def build_advanced(self):
-        f = self.page('Avançado', 'Ajustes de sensibilidade.')
+        """Create the "Avançado" page: stick dead zone and the configuration file paths."""
+        f =self.page('Avançado', 'Ajustes de sensibilidade.')
         self.spin(f, 'Zona morta dos analógicos', self.var('stick_deadzone'), 0, 30000, 500)
         self.note(f, f'0 = máxima sensibilidade; 7849 = padrão.\n\nConfiguração: {CONFIG_FILE}\n'
                      f'Opções do jogo: {GAME_INI}')
 
     def build_diagnostics(self):
-        f = self.page('Diagnóstico', 'Opções para medir e isolar problemas. Cada uma só vira variável de '
+        """Create the "Diagnóstico" page for the ``diagnostics`` settings.
+
+        Creates one Tk variable per ``DIAGNOSTICS`` key in :attr:`diag_vars`
+        and adds the measurement, texture, shader (including "Limpar cache de
+        shaders"), SPURS and MLAA pacing controls. The parallel workloads
+        combobox and the free-text entry are kept in sync by
+        :meth:`select_parallel` and :meth:`sync_parallel`.
+        """
+        f =self.page('Diagnóstico', 'Opções para medir e isolar problemas. Cada uma só vira variável de '
                                      'ambiente quando difere do padrão; o padrão é o de scripts/run.sh.')
         diagnostics = self.app['diagnostics']
         for key, value in DIAGNOSTICS.items():
@@ -467,16 +653,22 @@ class Launcher:
         self.ttk.Button(f, text='Restaurar padrões', command=self.reset_diagnostics).pack(anchor='w')
 
     def select_parallel(self):
+        """Copy the picked parallel-workload preset into the entry; "Personalizado" leaves it as is."""
         chosen = next(k for k, v in PARALLEL_LABELS.items() if v == self.parallel_box.get())
         if chosen in PARALLEL_PRESETS:
             self.diag_vars['kern_parallel'].set(PARALLEL_PRESETS[chosen])
 
     def sync_parallel(self):
+        """Select the preset matching the entry text (spaces ignored), or "Personalizado"."""
         value = self.diag_vars['kern_parallel'].get().replace(' ', '')
         preset = next((k for k, v in PARALLEL_PRESETS.items() if v == value), 'custom')
         self.parallel_box.set(PARALLEL_LABELS[preset])
 
     def clear_shaders(self):
+        """Delete the shader cache after the user's click, refusing while the game runs.
+
+        The outcome (refusal, error or number of files removed) is shown in a message box.
+        """
         if self.process:
             self.messagebox.showwarning('Shaders', 'Feche o jogo antes de limpar o cache de shaders.')
             return
@@ -488,24 +680,41 @@ class Launcher:
         self.messagebox.showinfo('Shaders', f'Cache de shaders limpo ({removed} arquivos).')
 
     def reset_diagnostics(self):
+        """Reset every diagnostic widget to its default (saved only on "Salvar")."""
         for key, value in DIAGNOSTICS.items():
             self.diag_vars[key].set(value)
 
     def build_log(self):
-        f = self.page('Log', f'Saída da execução atual (últimas {LOG_LIMIT} linhas). O arquivo completo é '
-                             f'{CONFIG_DIR / "last_run.log"}.')
+        """Create the "Log" page: buttons, the event count summary and a read-only text view.
+
+        The text widget has one color tag per classification level
+        (``error``, ``gap``, ``warning``) used by :meth:`append_log`.
+        """
+        f =self.page('Log', f'Saída da execução atual (últimas {LOG_LIMIT} linhas). O arquivo completo é '
+                             f'{CONFIG_DIR / "last_run.log"}. Histórico e diagnósticos em logs/.')
         row = self.ttk.Frame(f)
         row.pack(fill='x', pady=(0, 8))
-        self.ttk.Button(row, text='Copiar', command=self.copy_log).pack(side='left', padx=(0, 6))
-        self.ttk.Button(row, text='Limpar', command=self.clear_log).pack(side='left', padx=6)
+        self.ttk.Button(row, text='Copiar trecho', command=self.copy_log).pack(side='left', padx=(0, 6))
+        self.ttk.Button(row, text='Limpar tela', command=self.clear_log).pack(side='left', padx=6)
         self.ttk.Button(row, text='Abrir pasta', command=lambda: self.open_folder(CONFIG_DIR)).pack(side='left', padx=6)
+        self.log_summary = self.tk.StringVar(value='Ocorrências classificadas: nenhuma execução')
+        self.ttk.Label(f, textvariable=self.log_summary).pack(anchor='w', pady=(0, 6))
         self.log = self.tk.Text(f, bg=BG, fg=TEXT, insertbackground=TEXT, wrap='word',
                                 height=23, font=('DejaVu Sans Mono', 9), state='disabled')
         self.log.pack(fill='both', expand=True)
+        for level, color in (('error', '#ff7777'), ('gap', '#ffb454'), ('warning', '#e6d28a')):
+            self.log.tag_configure(level, foreground=color)
 
     def append_log(self, text):
+        """Append ``text`` to the log view, coloring each line by its classification.
+
+        Lines beyond ``LOG_LIMIT`` are dropped from the top and the view
+        scrolls to the end.
+        """
         self.log.configure(state='normal')
-        self.log.insert('end', text)
+        for line in text.splitlines(keepends=True):
+            hit = classify(line)
+            self.log.insert('end', line, (hit[0],) if hit else ())
         lines = int(self.log.index('end-1c').split('.')[0])
         if lines > LOG_LIMIT:
             self.log.delete('1.0', f'{lines - LOG_LIMIT + 1}.0')
@@ -513,28 +722,41 @@ class Launcher:
         self.log.configure(state='disabled')
 
     def copy_log(self):
+        """Copy the visible log text to the clipboard."""
         self.root.clipboard_clear()
         self.root.clipboard_append(self.log.get('1.0', 'end-1c'))
         self.status.set('Log copiado')
 
     def clear_log(self):
+        """Empty the log view; the log files on disk are not touched."""
         self.log.configure(state='normal')
         self.log.delete('1.0', 'end')
         self.log.configure(state='disabled')
 
     def open_folder(self, path):
+        """Open ``path`` in the file manager (see :func:`open_path`), showing errors in a message box."""
         try:
             open_path(path)
         except OSError as e:
             self.messagebox.showerror('Abrir pasta', str(e))
 
     def refresh_backups(self):
+        """Reload the backup list, select the newest and enable "Restaurar" only if one exists."""
         self.backup_names = list_backups(BACKUP_DIR)
         self.backup_box.configure(values=[backup_label(n) for n in self.backup_names])
         self.backup_box.set(backup_label(self.backup_names[0]) if self.backup_names else 'nenhum backup ainda')
         self.restore_button.configure(state='normal' if self.backup_names else 'disabled')
 
     def restore_saves(self):
+        """Restore the backup selected in the combobox after asking for confirmation.
+
+        Refused while the game runs. The current saves get a safety backup
+        first (see :func:`save_backup.restore`); errors are shown in a
+        message box and the outcome appears in the status bar.
+
+        Returns:
+            ``True`` if the saves were restored, ``False`` otherwise.
+        """
         if self.process:
             self.messagebox.showwarning('Saves', 'Feche o jogo antes de restaurar um backup.')
             return False
@@ -556,13 +778,23 @@ class Launcher:
         return True
 
     def show(self, name):
+        """Display page ``name``, hide the others and highlight its sidebar button."""
         for key, page in self.pages.items():
             page.pack_forget()
             self.nav[key].configure(bg=ACCENT if key == name else BG)
         self.pages[name].pack(fill='both', expand=True)
 
     def collect(self):
-        data = copy.deepcopy(self.app)
+        """Build a settings dict from the current widget values (not yet validated).
+
+        Starts from a copy of :attr:`app`, applies the top-level variables,
+        converts the numeric fields to ``int`` and gathers the diagnostics and
+        both control maps.
+
+        Raises:
+            ValueError: If the dead zone, kernel threads or MLAA pacing is not an integer.
+        """
+        data =copy.deepcopy(self.app)
         data.update({k: v.get() for k, v in self.vars.items()})
         try:
             data['stick_deadzone'] = int(data['stick_deadzone'])
@@ -576,11 +808,29 @@ class Launcher:
         return data
 
     def collect_ini(self):
-        values = {key: var.get() for key, var in self.ini_vars.items()}
+        """Return the validated ``game.ini`` options from the "Gráficos" widgets.
+
+        Overlay items are listed in ``OVERLAY_ITEMS`` order followed by any
+        unknown items read from the file.
+
+        Raises:
+            ValueError: If a value is invalid.
+        """
+        values ={key: var.get() for key, var in self.ini_vars.items()}
         values['overlay_items'] = [i for i in game_ini.OVERLAY_ITEMS if self.item_vars[i].get()] + self.extra_items
         return game_ini.validate({**self.ini, **values})
 
     def save(self):
+        """Validate and write ``settings.json`` and ``game.ini`` from the widgets.
+
+        On success the in-memory copies are updated and the status bar says
+        the changes apply on the next run; on failure the error is shown in a
+        message box. ``settings.json`` is written before ``game.ini``, so an
+        error writing the latter can leave only the former updated.
+
+        Returns:
+            ``True`` if both files were saved.
+        """
         try:
             data = self.collect()
             ini = self.collect_ini()
@@ -594,6 +844,16 @@ class Launcher:
             return False
 
     def play(self):
+        """Save the settings, back up the saves and start the game.
+
+        Does nothing if a game is already running or saving fails. The game
+        is started by :class:`run_log.RunLog`, and its ``session.log`` is
+        opened for reading so :meth:`tick` can follow it. If starting fails,
+        a process that was already spawned is terminated, whatever reached
+        ``last_run.log`` is shown in the Log page and an error box appears.
+        On success the run counter is incremented, the log view is reset and
+        the "JOGAR"/"Parar" buttons are toggled.
+        """
         if self.process or not self.save():
             return
         log_lines = []
@@ -602,47 +862,74 @@ class Launcher:
             log_lines.append(backup_saves())
             command = game_command(self.app)
             log_lines.append('[launcher] ' + ' '.join(command))
-            self.log_writer = open(CONFIG_DIR / 'last_run.log', 'wb')
-            self.log_reader = open(CONFIG_DIR / 'last_run.log', 'r', encoding='utf-8', errors='replace')
-            self.process = subprocess.Popen(command, cwd=PORT, env=env,
-                                            stdout=self.log_writer, stderr=subprocess.STDOUT,
-                                            start_new_session=True)
+            self.run_log = RunLog(CONFIG_DIR, PORT, command, env, log_lines)
+            self.process = self.run_log.process
+            self.log_reader = open(self.run_log.directory / 'session.log', 'r', encoding='utf-8', errors='replace')
         except (OSError, ValueError) as e:
-            if self.log_writer:
-                self.log_writer.close()
+            if self.run_log:
+                if self.run_log.process and self.run_log.process.poll() is None:
+                    os.killpg(self.run_log.process.pid, signal.SIGTERM)
+                    self.run_log.process.wait(timeout=5)
+                self.run_log.close()
+                self.run_log = None
+                self.process = None
             if self.log_reader:
                 self.log_reader.close()
                 self.log_reader = None
+            self.clear_log()
+            try:
+                with (CONFIG_DIR / 'last_run.log').open(encoding='utf-8', errors='replace') as failed_log:
+                    self.append_log(failed_log.read(65536))
+            except OSError:
+                pass
+            self.append_log(f'[launcher:error] Não foi possível iniciar: {e}\n')
             self.messagebox.showerror('Não foi possível iniciar', str(e))
             return
         self.generation += 1
+        self.logging_error_seen = False
         self.partial = ''
         self.clear_log()
-        self.append_log('\n'.join(log_lines) + '\n')
+        self.follow(self.log_reader.read(65536))
         self.refresh_backups()
         self.play_button.configure(state='disabled')
         self.stop_button.configure(state='normal')
         self.status.set('Jogo em execução')
 
     def stop(self):
+        """Ask the running game to quit.
+
+        Marks the stop as requested in the run log (so the exit is not
+        reported as a failure) and sends ``SIGTERM`` to the game's process
+        group. If the same run is still alive 2 seconds later, ``SIGKILL`` is
+        sent. The UI is reset by :meth:`tick` once the process has exited.
+        """
         process, generation = self.process, self.generation
         if not process or process.poll() is not None:
             return
         try:
+            self.run_log.stop_requested = True
+            self.run_log.note('stop', f'SIGTERM requested pid={process.pid}')
             os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError:
             return
         self.status.set('Encerrando…')
 
         def force():
+            """Kill the process group if the run that was stopped is still alive."""
             if generation == self.generation and process.poll() is None:
                 try:
+                    self.run_log.note('stop', f'SIGKILL escalation pid={process.pid}')
                     os.killpg(process.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
         self.root.after(2000, force)
 
     def follow(self, chunk):
+        """Show a chunk of ``session.log`` and update the status bar from milestone lines.
+
+        Complete lines are checked with :func:`status_for_line`; the trailing
+        partial line is kept (at most its last 4096 characters) for the next chunk.
+        """
         self.append_log(chunk)
         lines = (self.partial + chunk).split('\n')
         self.partial = lines.pop()[-4096:]
@@ -652,17 +939,28 @@ class Launcher:
                 self.status.set(status)
 
     def tick(self):
+        """Poll the game and its log; reschedules itself every 100 ms.
+
+        Pumps the :class:`run_log.RunLog`, reports a logging failure once,
+        updates the event count summary and shows up to 64 KiB of new
+        ``session.log`` text. When the run has finished and the log has been
+        read to the end, the UI is reset, ``game.ini`` is re-read and the
+        exit code appears in the status bar. If the window is closing and no
+        game is running, the window is destroyed instead of rescheduling.
+        """
+        if self.run_log and not self.run_log.finished:
+            self.run_log.pump()
+            if self.run_log.logging_error and not self.logging_error_seen:
+                self.logging_error_seen = True
+                self.append_log(f'[launcher:error] Falha ao gravar diagnóstico: {self.run_log.logging_error}. Log estruturado incompleto; confira espaço em disco e raw.log.\n')
+            self.log_summary.set('Ocorrências emitidas: ' + (', '.join(f'{key}={value}' for key, value in self.run_log.counts.items()) or 'nenhuma classificada'))
         if self.log_reader:
             chunk = self.log_reader.read(65536)
             if chunk:
                 self.follow(chunk)
-        if self.process and self.process.poll() is not None:
+        if self.process and self.run_log.finished and len(chunk) < 65536:
             code = self.process.returncode
             self.process = None
-            rest = self.log_reader.read()
-            if rest:
-                self.follow(rest)
-            self.log_writer.close()
             self.log_reader.close()
             self.log_reader = None
             self.play_button.configure(state='normal')
@@ -675,6 +973,12 @@ class Launcher:
         self.root.after(100, self.tick)
 
     def close(self):
+        """Handle the window close button.
+
+        Saves the settings first and stays open if that fails. Otherwise the
+        window is destroyed right away, or, if a game is running, the game
+        is stopped and :meth:`tick` destroys the window after it exits.
+        """
         if not self.save():
             return
         self.closing = True
@@ -684,13 +988,26 @@ class Launcher:
             self.destroy()
 
     def destroy(self):
+        """Cancel every pending Tk ``after`` callback and destroy the root window."""
         for timer in self.root.tk.call('after', 'info'):
             self.root.after_cancel(timer)
         self.root.destroy()
 
 
 def main():
-    parser = argparse.ArgumentParser(description='God of War: Ascension — PC')
+    """Command-line entry point.
+
+    ``--play`` loads the saved settings, backs up the saves and replaces the
+    current process with the game command (``os.execvpe`` with the working
+    directory set to the port root). Without it the Tk launcher runs. The
+    hidden ``--exit-after MS`` option shows every page once and closes the
+    window after ``MS`` milliseconds, for automated smoke tests.
+
+    Returns:
+        Process exit status: 0 on normal exit, 1 if setup failed (the error
+        is printed to stderr).
+    """
+    parser =argparse.ArgumentParser(description='God of War: Ascension — PC')
     parser.add_argument('--play', action='store_true', help='Iniciar com a configuração salva, sem launcher')
     parser.add_argument('--exit-after', type=int, metavar='MS', help=argparse.SUPPRESS)
     args = parser.parse_args()
