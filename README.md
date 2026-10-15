@@ -194,7 +194,13 @@ share port 0, and losing window focus releases all input. Remapping takes effect
 
 ## Contributing
 
-Bug reports, investigations and pull requests are welcome.
+Bug reports, investigations and pull requests are welcome. Contributions reach `main` only through pull
+requests from forks; direct pushes are blocked.
+
+1. Fork the repository and create a branch in your fork.
+2. Commit your change there and open a pull request against `main`.
+3. A maintainer reviews it; once approved and with every conversation resolved, it is squashed into
+   `main`. Pushing new commits after a review asks for a new review.
 
 - **Report issues** with the log of the failing run (`last_run.log` or the folder under `logs/`), the
   build preset, your GPU and driver, and what was on screen.
@@ -226,3 +232,8 @@ Also used: [SDL2](https://github.com/libsdl-org/SDL), [FFmpeg](https://ffmpeg.or
 [Dear ImGui](https://github.com/ocornut/imgui), [Vulkan](https://www.vulkan.org),
 [PyCryptodome](https://www.pycryptodome.org), [Capstone](https://www.capstone-engine.org) and
 [Tk](https://www.tcl.tk). Third-party components keep their own licenses.
+
+## License
+
+GNU GPL v2 or later ([LICENSE](LICENSE)). Third-party components keep their own licenses: Dear ImGui
+(`third_party/imgui`) is MIT.
