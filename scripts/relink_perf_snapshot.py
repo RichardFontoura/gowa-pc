@@ -6,7 +6,7 @@ source/build are only read for compiler/linker recipes; inputs come from the
 immutable snapshot. No game is launched.
 
 Usage example:
-    ../.venv/bin/python scripts/relink_perf_snapshot.py scratch/perf-ab
+    python3 scripts/relink_perf_snapshot.py scratch/perf-ab
         candidate --name GowaFpsFix --source libs/video/cellGcmSys.c --probe
 
 SNAPSHOT is a directory made by build_perf_candidate.py. Each --source path is
@@ -24,8 +24,9 @@ from pathlib import Path
 import shlex
 import shutil
 import subprocess
+import sys
 
-from build_perf_candidate import BUILD, SDK, PORT, WORKSPACE, run
+from build_perf_candidate import BUILD, SDK, PORT, run
 
 
 def instrument(tree):
@@ -112,7 +113,7 @@ def main():
     archive = directory / 'libps3recomp_runtime.a'
     if objects:
         run(['ar', 'r', archive, *objects], directory / 'rearchive.log')
-    ninja = shutil.which('ninja') or str(WORKSPACE / '.venv/bin/ninja')
+    ninja = shutil.which('ninja') or str(Path(sys.executable).with_name('ninja'))
     recipes = subprocess.check_output([ninja, '-C', str(BUILD), '-t', 'commands', 'GowAscensionRecomp'], text=True).splitlines()
     link = shlex.split(next(line for line in reversed(recipes) if ' -o GowAscensionRecomp ' in line))
     if link[:2] == [':', '&&']: link = link[2:]

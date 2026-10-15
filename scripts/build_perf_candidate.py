@@ -3,10 +3,10 @@
 
 Copies existing link inputs, recompiles only audio/SPU channel objects, and
 links two distinct executables. Does not launch either game. Run from anywhere
-with ../.venv/bin/python. Output must be a new directory.
+with a Python that has ps3recomp's requirements. Output must be a new directory.
 
 Usage example:
-    ../.venv/bin/python scripts/build_perf_candidate.py --output scratch/perf-ab
+    python3 scripts/build_perf_candidate.py --output scratch/perf-ab
 
 Layout of the output directory: baseline/ps3recomp and candidate/ps3recomp
 (source copies; the candidate has PATCH applied), link-inputs/ (frozen copies
@@ -25,10 +25,10 @@ from pathlib import Path
 import shlex
 import shutil
 import subprocess
+import sys
 
 PORT = Path(__file__).resolve().parents[1]
-WORKSPACE = PORT.parent
-SDK = WORKSPACE / "ps3recomp"
+SDK = Path(os.environ.get("PS3RECOMP", PORT.parent / "ps3recomp")).resolve()
 # Shared build tree: only its Ninja recipes, compile_commands.json and link
 # inputs are read; nothing is built or written there.
 BUILD = PORT / "build/linux-vulkan"
@@ -105,7 +105,7 @@ def main():
     print(f"Source snapshot and candidate patch: {root}", flush=True)
 
     # Read Ninja's recipe only. -t commands does not execute build rules.
-    ninja = shutil.which("ninja") or str(WORKSPACE / ".venv/bin/ninja")
+    ninja = shutil.which("ninja") or str(Path(sys.executable).with_name("ninja"))
     recipes = subprocess.check_output([ninja, "-C", str(BUILD), "-t", "commands",
                                        "GowAscensionRecomp"], text=True).splitlines()
     link = shlex.split(next(line for line in reversed(recipes) if " -o GowAscensionRecomp " in line))

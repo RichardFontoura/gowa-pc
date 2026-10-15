@@ -17,11 +17,11 @@
 ///
 /// Built and run by scripts/test_pc.sh (from the repository root):
 ///
-///     clang -std=c17 -D_GNU_SOURCE -I../ps3recomp/include -c ../ps3recomp/libs/input/cellPad.c -o scratch/pc-tests/cellPad.o
-///     clang++ -std=c++20 -Wall -Wextra -I../ps3recomp/include -I../ps3recomp/libs/input tests/test_pc_input.cpp pc/input.cpp scratch/pc-tests/cellPad.o -lSDL2 -lpthread -o scratch/pc-tests/test_pc_input
+///     clang -std=c17 -D_GNU_SOURCE -I<ps3recomp>/include -c <ps3recomp>/libs/input/cellPad.c -o scratch/pc-tests/cellPad.o
+///     clang++ -std=c++20 -Wall -Wextra -I<ps3recomp>/include -I<ps3recomp>/libs/input tests/test_pc_input.cpp pc/input.cpp scratch/pc-tests/cellPad.o -lSDL2 -lpthread -o scratch/pc-tests/test_pc_input
 ///     scratch/pc-tests/test_pc_input
 #include "../pc/input.h"
-#include "../../ps3recomp/libs/input/cellPad.h"
+#include "cellPad.h"
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>

@@ -11,7 +11,7 @@ NP_KLIC_FREE or ``<file>+0x<offset>``; the content ID goes to stderr.
 decrypt_eboot.sh passes the first field to the SELF decrypter.
 
 Usage example:
-    ../.venv/bin/python scripts/find_klic.py --keys keys.h GOWA.SELF EBOOT.elf
+    python3 scripts/find_klic.py --keys keys.h GOWA.SELF EBOOT.elf
 
 Requires pycryptodome. The key header (--keys, or the PS3_KEY_VAULT variable)
 is a C header defining ``NP_OMAC_KEY_2[0x10]`` and ``NP_KLIC_FREE[0x10]``.

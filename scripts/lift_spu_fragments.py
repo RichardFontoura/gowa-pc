@@ -19,16 +19,16 @@ appended to spu_recomp.c, and region.txt with offset, size and seed count.
 
 Usage example:
     SPU_PIC_CAPTURE=scratch/pic.txt scripts/run.sh
-    ../.venv/bin/python scripts/lift_spu_fragments.py scratch/pic.txt
+    python3 scripts/lift_spu_fragments.py scratch/pic.txt
 """
 import argparse
+import os
 from pathlib import Path
 import subprocess
 import sys
 
 PORT = Path(__file__).resolve().parents[1]
-WORKSPACE = PORT.parent
-TOOLS = WORKSPACE / 'ps3recomp' / 'tools'
+TOOLS = Path(os.environ.get('PS3RECOMP', PORT.parent / 'ps3recomp')).resolve() / 'tools'
 
 
 def locate(elf, blob):

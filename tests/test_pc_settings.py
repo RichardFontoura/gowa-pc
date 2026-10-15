@@ -1,9 +1,8 @@
 """Tests for loading, saving and validating ``settings.json`` (``launcher/settings.py``).
 
 Covers the save/load round trip, the environment passed to the game, atomic
-saves, rejection of invalid data without touching the file on disk, and reading
-the legacy ``gowa-recomp`` config until the first save. No display, game build
-or game assets are needed.
+saves and rejection of invalid data without touching the file on disk. No
+display, game build or game assets are needed.
 
 Run from the repository root (also run by ``scripts/test_pc.sh``)::
 
@@ -73,18 +72,6 @@ class SettingsTests(unittest.TestCase):
             with self.assertRaises(json.JSONDecodeError):
                 settings.load(path)
             self.assertEqual(path.read_text(), '{broken')
-
-    def test_reads_legacy_config_until_first_save(self):
-        """The legacy config file is read while the current one is missing and ignored once it is saved."""
-        with tempfile.TemporaryDirectory() as folder:
-            current = Path(folder) / 'gowa-pc' / 'settings.json'
-            legacy = Path(folder) / 'gowa-recomp' / 'settings.json'
-            settings.save({**settings.DEFAULTS, 'rumble': False}, legacy)
-            with patch.object(settings, 'CONFIG_FILE', current), \
-                    patch.object(settings, 'LEGACY_CONFIG_FILE', legacy):
-                self.assertFalse(settings.load(current)['rumble'])
-                settings.save(settings.DEFAULTS, current)
-                self.assertTrue(settings.load(current)['rumble'])
 
 
 if __name__ == '__main__':

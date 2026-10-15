@@ -10,7 +10,7 @@ Each module is written as ``jobmod_<EA>_e<ENTRY>.bin`` (EA = guest virtual
 address, hex) for ps3recomp's tools/lift_jobmods.py to lift.
 
 Usage example:
-    ../.venv/bin/python scripts/extract_jobmods_elf.py game/EBOOT.ELF --out analysis/jobmods
+    python3 scripts/extract_jobmods_elf.py game/EBOOT.ELF --out analysis/jobmods
 """
 import argparse
 import struct

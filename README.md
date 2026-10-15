@@ -67,21 +67,49 @@ first level runs far too slowly to play.
 
 ### 1. Get the sources
 
-The port builds against the `gowa-fixes` branch of
-[RichardFontoura/ps3recomp](https://github.com/RichardFontoura/ps3recomp), which carries the runtime,
-SPURS, GCM/RSX/Vulkan, SPU and lifter fixes this game needs. The CMake presets and the scripts expect
-that checkout and a Python virtual environment next to this repository:
+> [!IMPORTANT]
+> This port does **not** build against upstream ps3recomp. It needs the **`gowa-fixes` branch** of
+> the fork [RichardFontoura/ps3recomp](https://github.com/RichardFontoura/ps3recomp/tree/gowa-fixes),
+> which carries the runtime, SPURS, GCM/RSX/Vulkan, SPU and lifter fixes this game depends on.
+> The fork's default branch (`master`) and upstream `sp00nznet/ps3recomp` do not have these fixes:
+> always pass `--branch gowa-fixes` when cloning.
+
+Clone both repositories side by side, with the fork on `gowa-fixes`:
 
 ```bash
+mkdir gowa-src && cd gowa-src
 git clone https://github.com/RichardFontoura/gowa-pc.git
-git clone -b gowa-fixes https://github.com/RichardFontoura/ps3recomp.git
-python3 -m venv .venv
-.venv/bin/pip install -r ps3recomp/requirements.txt ninja
-cd gowa-pc
+git clone --branch gowa-fixes https://github.com/RichardFontoura/ps3recomp.git
+git -C ps3recomp branch --show-current   # must print: gowa-fixes
 ```
 
-`PS3RECOMP=/path/to/ps3recomp` overrides the toolkit location for the scripts, and
-`-DPS3RECOMP_DIR=...` does the same for CMake.
+The result is:
+
+```
+gowa-src/
+├── gowa-pc/     this repository
+└── ps3recomp/   the fork, on the gowa-fixes branch
+```
+
+`../ps3recomp` is the default location for the CMake presets and the scripts. If you keep the fork
+somewhere else, point to it with `PS3RECOMP=/path/to/ps3recomp` (scripts) and
+`-DPS3RECOMP_DIR=/path/to/ps3recomp` (CMake). When you update this repository, update the fork too,
+since both move together:
+
+```bash
+git -C gowa-pc pull
+git -C ps3recomp pull   # still on gowa-fixes
+```
+
+Then create a Python environment with the ps3recomp tool requirements. It can live anywhere;
+activate it before running the scripts, or set `GOWA_PYTHON` to its interpreter:
+
+```bash
+python3 -m venv ~/.venvs/gowa
+~/.venvs/gowa/bin/pip install -r ps3recomp/requirements.txt ninja
+source ~/.venvs/gowa/bin/activate        # or: export GOWA_PYTHON=~/.venvs/gowa/bin/python
+cd gowa-pc
+```
 
 ### 2. Prepare the game files
 
@@ -94,6 +122,8 @@ scripts/extract_disc.sh /path/to/disc.iso           # -> game/disc (refuses inco
 scripts/decrypt_eboot.sh                            # update (default) or disc -> game/EBOOT.ELF
 ```
 
+Instead of passing the paths, you can set `GOWA_DUMPS` to a folder that holds the ISO and the PKG.
+
 With the 1.12 patch, `USRDIR/EBOOT.BIN` is only a small loader that starts `GOWA.SELF`, the real
 executable. `decrypt_eboot.sh` finds the license key of `GOWA.SELF` inside the decrypted loader with
 `scripts/find_klic.py`, which validates every candidate against the CMAC of the NPD header. No key is
@@ -104,9 +134,9 @@ stored in the repository.
 ```bash
 scripts/analyze.sh       # imports, ELF header, SPU images and the WWS job policy module -> analysis/
 scripts/lift.sh          # PPU -> out/, recompiled/
-../.venv/bin/python scripts/extract_jobmods_elf.py game/EBOOT.ELF --out analysis/jobmods
+python3 scripts/extract_jobmods_elf.py game/EBOOT.ELF --out analysis/jobmods
 scripts/lift_spu.sh      # SPU images and the WWS policy module -> spu/
-../.venv/bin/python ../ps3recomp/tools/lift_jobmods.py --jobmods analysis/jobmods \
+python3 ../ps3recomp/tools/lift_jobmods.py --jobmods analysis/jobmods \
     --out spu --register spu/jobmods_register.c
 scripts/build.sh         # linux-vulkan preset by default (also linux-vulkan-debug, linux-null)
 ```
@@ -117,7 +147,7 @@ fits your RAM.
 **Optional: position-independent SPU fragments.** Some jobs copy SPU code to local-store addresses
 chosen at run time. Without translated fragments the SPU interpreter runs that code, much more slowly.
 To translate them, run the game once with `SPU_PIC_CAPTURE=<file>`, then
-`../.venv/bin/python scripts/lift_spu_fragments.py <file> --overlay 210` and build again.
+`python3 scripts/lift_spu_fragments.py <file> --overlay 210` and build again.
 
 All generated files stay out of git: `game/` (extracted dumps and decrypted ELFs), `out/` and
 `recompiled/` (translated PPU), `spu/` (translated SPU), `analysis/`, `build/`, `gamedata/` (saves
@@ -130,6 +160,10 @@ scripts/launcher.sh          # settings and the Play button
 scripts/launcher.sh --play   # start straight away with the saved settings
 scripts/run.sh               # diagnostic entry point (ignores the launcher settings)
 ```
+
+The launcher needs Tk in the Python it runs with (`GOWA_PYTHON`, or `python3` from `PATH`). If that
+Python has no Tk, `GOWA_TK_DIR` can point to an unpacked Tk 8.6 library folder (with `libtk8.6.so`
+and `tk8.6/`).
 
 Settings live in `${XDG_CONFIG_HOME:-~/.config}/gowa-pc/` (`GOWA_CONFIG_DIR` changes the folder):
 
@@ -214,7 +248,7 @@ requests from forks; direct pushes are blocked.
 - **Run the tests** that need no game assets before opening a pull request:
   ```bash
   scripts/test_pc.sh
-  ../.venv/bin/python -m unittest discover -s tests -p 'test_launcher*.py'
+  python3 -m unittest discover -s tests -p 'test_launcher*.py'
   ```
   With `GOWA_UI_TEST=1` and `xvfb-run` the launcher tests also exercise the Tk pages.
 - **Measure performance changes** on the same scene and settings, separating warm-up from steady state,

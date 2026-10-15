@@ -34,8 +34,6 @@ SHADER_CACHE_DIR = Path(os.environ.get('XDG_CACHE_HOME') or Path.home() / '.cach
 SHADER_CACHE_FILES = ('pipelines.vkcache', 'pipelines.manifest')
 # The game's save data inside the port's virtual dev_hdd0 tree.
 SAVEDATA_DIR = PORT / 'gamedata/dev_hdd0/home/00000001/savedata'
-# Settings file of an older config directory name, read when the current one is missing.
-LEGACY_CONFIG_FILE = None if os.environ.get('GOWA_CONFIG_DIR') else CONFIG_ROOT / 'gowa-recomp' / 'settings.json'
 # Current settings.json schema version; version 1 files are upgraded by migrate().
 VERSION = 2
 # One row per game button: (id, label shown in the UI, default keys joined by '|',
@@ -292,9 +290,7 @@ def stick_conflicts(keys):
 def load(path=CONFIG_FILE, ini_path=None):
     """Load and validate ``settings.json``.
 
-    When the default file is requested but missing, the legacy settings file
-    is read instead if it exists. A missing file yields a copy of
-    ``DEFAULTS``. A version 1 file that selected ``borderless`` display mode
+    A missing file yields a copy of ``DEFAULTS``. A version 1 file that selected ``borderless`` display mode
     has that choice carried over into ``game.ini`` via
     :func:`seed_display_mode` (the file on disk is not rewritten here).
 
@@ -310,8 +306,6 @@ def load(path=CONFIG_FILE, ini_path=None):
         OSError: If a file cannot be read or ``game.ini`` cannot be written.
     """
     path = Path(path)
-    if path == CONFIG_FILE and not path.exists() and LEGACY_CONFIG_FILE and LEGACY_CONFIG_FILE.exists():
-        path = LEGACY_CONFIG_FILE
     try:
         raw = json.loads(path.read_text(encoding='utf-8'))
     except FileNotFoundError:

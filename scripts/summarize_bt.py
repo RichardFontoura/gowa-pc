@@ -5,7 +5,7 @@ functions whose names start with "__" are dropped; source paths are reduced
 to file names. Threads left with no frames are omitted. Used by hang_dump.sh.
 
 Usage example:
-    ../.venv/bin/python scripts/summarize_bt.py analysis/hang_bt.txt
+    python3 scripts/summarize_bt.py analysis/hang_bt.txt
 """
 import re
 import sys

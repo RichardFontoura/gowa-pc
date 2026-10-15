@@ -6,8 +6,13 @@
 # paths and functions below.
 #
 # Environment variables honoured:
-#   PS3RECOMP       path to the ps3recomp checkout (default: the ps3recomp
-#                   checkout next to this repository, ../ps3recomp).
+#   PS3RECOMP       path to the ps3recomp checkout on the gowa-fixes branch
+#                   (default: ../ps3recomp, next to this repository).
+#   GOWA_PYTHON     Python interpreter with ps3recomp's requirements
+#                   installed (default: python3 from PATH, e.g. an activated
+#                   virtualenv).
+#   GOWA_DUMPS      directory searched for the disc ISO and the update PKG
+#                   when extract_disc.sh / extract_update.sh get no argument.
 #   SELF_DECRYPTER  path to an external SELF/NPDRM decrypter executable that
 #                   accepts `--decrypt <file>`, reads the KLIC (hex, one line,
 #                   empty for none) from stdin and writes <file-stem>.elf next
@@ -23,18 +28,17 @@ set -euo pipefail
 
 # Root of this repository (the parent of scripts/).
 PORT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# Parent directory of the repository; sibling checkouts are resolved from it.
-WORKSPACE="$(dirname "$PORT_DIR")"
-# ps3recomp checkout providing tools/*.py, the runtime and the HLE libraries.
-PS3RECOMP="${PS3RECOMP:-$WORKSPACE/ps3recomp}"
+# ps3recomp checkout (gowa-fixes branch) providing tools/*.py, the runtime
+# and the HLE libraries.
+PS3RECOMP="${PS3RECOMP:-$(dirname "$PORT_DIR")/ps3recomp}"
 # External SELF/NPDRM decrypter executable (see header above).
 SELF_DECRYPTER="${SELF_DECRYPTER:-}"
 # C header with the NP_OMAC_KEY_2 and NP_KLIC_FREE arrays (see header above).
 PS3_KEY_VAULT="${PS3_KEY_VAULT:-}"
-# Interpreter of the Python virtualenv in ../.venv (has ps3recomp's deps).
-PY="$WORKSPACE/.venv/bin/python"
-# Game dumps directory (../gowa): disc ISO and update PKG, never modified.
-DUMPS="$WORKSPACE/gowa"
+# Python interpreter with ps3recomp's requirements (see header above).
+PY="${GOWA_PYTHON:-python3}"
+# Optional directory with the game dumps (disc ISO and update PKG), never modified.
+DUMPS="${GOWA_DUMPS:-}"
 # Title ID of the game; names the update directory under /dev_hdd0/game.
 TITLE_ID="BCUS98232"
 
@@ -57,17 +61,19 @@ RECOMP="$PORT_DIR/recompiled"
 # Analysis artefacts: ELF/import JSON, SPU images, hang dumps.
 ANALYSIS="$PORT_DIR/analysis"
 
-# Run a ps3recomp Python tool with the virtualenv interpreter.
+# Run a ps3recomp Python tool with $PY.
 # Arguments: $1 = tool name (file stem in $PS3RECOMP/tools, without .py);
 #            remaining arguments are passed to the tool unchanged.
 tool() {
     "$PY" "$PS3RECOMP/tools/$1.py" "${@:2}"
 }
 
-# Print the path of the first file in the dumps directory (searched at most
-# two levels deep) whose name matches a glob; prints nothing if none matches.
+# Print the path of the first file in $GOWA_DUMPS (searched at most two
+# levels deep) whose name matches a glob; prints nothing if none matches or
+# GOWA_DUMPS is unset.
 # Arguments: $1 = file name glob, e.g. '*.iso'.
 find_dump() {
+    [[ -n "$DUMPS" ]] || return 0
     find "$DUMPS" -maxdepth 2 -type f -name "$1" -print -quit
 }
 

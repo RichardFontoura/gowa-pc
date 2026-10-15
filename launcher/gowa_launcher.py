@@ -337,7 +337,7 @@ class Launcher:
         "Restaurar" button (:meth:`restore_saves`) and a button that opens
         the savedata folder.
         """
-        f =self.page('Jogo', 'Instalação preparada neste workspace.')
+        f =self.page('Jogo', 'Estado da instalação e backups dos saves.')
         for title, path in (('Executável', PORT / 'build/linux-vulkan/GowAscensionRecomp'),
                             ('Jogo', PORT / 'game/EBOOT.ELF'), ('Disco', PORT / 'game/disc/PS3_GAME'),
                             ('Atualização', PORT / 'game/update')):
