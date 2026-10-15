@@ -5,7 +5,7 @@ import tempfile
 
 CORNERS = ('tl', 'tr', 'bl', 'br')
 DISPLAY_MODES = ('windowed', 'borderless', 'fullscreen')
-OVERLAY_ITEMS = ('fps', 'frametime', 'graph', 'present', 'spu')
+OVERLAY_ITEMS = ('fps', 'frametime', 'graph', 'present', 'spu', 'shaders')
 WINDOW_PRESETS = ('1280x720', '1600x900', '1920x1080', 'monitor')
 DEFAULTS = {'show_fps': False, 'overlay_corner': 'tl', 'overlay_scale': 100, 'overlay_opacity': 80,
             'overlay_items': ['fps', 'frametime'], 'display_mode': 'windowed', 'vsync': True,

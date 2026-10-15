@@ -115,7 +115,8 @@ class EnvironmentTests(unittest.TestCase):
     def test_defaults_set_no_diagnostic_variables(self):
         env = self.env()
         for var in ('RSX_FRAME_CSV', 'RSX_VK_TEXTURE_COMPUTE', 'RSX_VK_RAW_TEXTURES', 'RSX_TEX_HASH_FULL',
-                    'VDEC_PERF', 'SPURS_KERN_THREADS', 'SPURS_KERN_PARALLEL', 'GCM_FLIP_MIN_MS'):
+                    'VDEC_PERF', 'SPURS_KERN_THREADS', 'SPURS_KERN_PARALLEL', 'GCM_FLIP_MIN_MS',
+                    'GOWA_SHADER_CACHE', 'GOWA_ASYNC_SHADERS', 'GOWA_SHADER_WARMUP'):
             self.assertNotIn(var, env)
         self.assertEqual(env['GOWA_GAME_INI'], '/cfg/game.ini')
         self.assertEqual(env['PS3RECOMP_VK_FULLSCREEN'], '0')
@@ -132,6 +133,27 @@ class EnvironmentTests(unittest.TestCase):
         self.assertEqual(env['SPURS_KERN_THREADS'], '2')
         self.assertEqual(env['SPURS_KERN_PARALLEL'], '')
         self.assertEqual(env['GCM_FLIP_MIN_MS'], '500')
+
+    def test_shader_toggles_become_variables(self):
+        env = self.env({'shader_cache': False, 'async_shaders': False, 'shader_warmup': False})
+        self.assertEqual(env['GOWA_SHADER_CACHE'], '0')
+        self.assertEqual(env['GOWA_ASYNC_SHADERS'], '0')
+        self.assertEqual(env['GOWA_SHADER_WARMUP'], '0')
+        with self.assertRaises(ValueError):
+            settings.validate({**settings.DEFAULTS,
+                               'diagnostics': {**settings.DIAGNOSTICS, 'shader_cache': 'no'}})
+
+    def test_clear_shader_cache_removes_only_cache_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'spirv').mkdir()
+            for name in ('pipelines.vkcache', 'pipelines.manifest', 'spirv/00ff.spv', 'spirv/abcd.spv',
+                         'keep.txt', 'spirv/keep.bin'):
+                (root / name).write_bytes(b'x')
+            self.assertEqual(settings.clear_shader_cache(root), 4)
+            self.assertEqual(sorted(str(p.relative_to(root)) for p in root.rglob('*') if p.is_file()),
+                             ['keep.txt', 'spirv/keep.bin'])
+            self.assertEqual(settings.clear_shader_cache(root / 'missing'), 0)
 
     def test_explicit_environment_keeps_precedence(self):
         env = self.env({'kern_threads': 2}, inherited={'SPURS_KERN_THREADS': '4'})

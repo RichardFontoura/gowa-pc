@@ -14,7 +14,7 @@ from save_backup import backup, label as backup_label, list_backups, restore
 from settings import (PORT, CONFIG_FILE, CONFIG_DIR, GAME_INI, BACKUP_DIR, SAVEDATA_DIR, CONTROLS,
                       PAD_NAMES, DIAGNOSTICS, PARALLEL_PRESETS, RESERVED_KEYS, load, save,
                       game_environment, game_command, tool_available, duplicate_bindings,
-                      stick_conflicts)
+                      stick_conflicts, clear_shader_cache, SHADER_CACHE_DIR)
 
 BG, PANEL, CARD, LINE = '#0d0b0b', '#161212', '#1d1717', '#2a2222'
 TEXT, MUTED, ACCENT, ACCENT_HI = '#e6e0d8', '#8a817a', '#a4161a', '#c81e25'
@@ -33,7 +33,7 @@ SIZE_LABELS = {'1280x720': '1280 × 720', '1600x900': '1600 × 900', '1920x1080'
 CORNER_LABELS = {'tl': 'Superior esquerdo', 'tr': 'Superior direito',
                  'bl': 'Inferior esquerdo', 'br': 'Inferior direito'}
 ITEM_LABELS = {'fps': 'FPS', 'frametime': 'Tempo de quadro', 'graph': 'Gráfico',
-               'present': 'Apresentação', 'spu': 'SPU'}
+               'present': 'Apresentação', 'spu': 'SPU', 'shaders': 'Shaders'}
 FLIP_LABELS = {'250': 'Padrão', '500': 'Conservador', '1500': 'Muito conservador',
                '0': 'Desligado (pode travar)'}
 PARALLEL_LABELS = {'Padrão': 'Padrão (7,13,14,15,16)', 'Seguro': 'Seguro (tudo em série)',
@@ -436,6 +436,14 @@ class Launcher:
         self.check(f, 'Conversão de texturas na GPU (RSX_VK_TEXTURE_COMPUTE)', self.diag_vars['texture_compute'])
         self.check(f, 'Texturas ARGB sem conversão (RSX_VK_RAW_TEXTURES)', self.diag_vars['raw_textures'])
         self.check(f, 'Hash completo das texturas, mais lento (RSX_TEX_HASH_FULL)', self.diag_vars['tex_hash_full'])
+        self.section(f, 'Shaders')
+        self.check(f, 'Cache de shaders em disco (GOWA_SHADER_CACHE)', self.diag_vars['shader_cache'])
+        self.check(f, 'Compilar shaders em segundo plano (GOWA_ASYNC_SHADERS)', self.diag_vars['async_shaders'])
+        self.check(f, 'Pré-compilar os shaders já vistos ao abrir (GOWA_SHADER_WARMUP)',
+                   self.diag_vars['shader_warmup'])
+        self.note(f, f'Cache: {SHADER_CACHE_DIR}. Em segundo plano, um objeto pode faltar por um quadro '
+                     'enquanto o shader dele compila.')
+        self.ttk.Button(f, text='Limpar cache de shaders', command=self.clear_shaders).pack(anchor='w', pady=(0, 6))
         self.section(f, 'SPURS')
         self.spin(f, 'Threads do kernel', self.diag_vars['kern_threads'], 1, 8, 1)
         row = self.ttk.Frame(f)
@@ -466,6 +474,17 @@ class Launcher:
         value = self.diag_vars['kern_parallel'].get().replace(' ', '')
         preset = next((k for k, v in PARALLEL_PRESETS.items() if v == value), 'custom')
         self.parallel_box.set(PARALLEL_LABELS[preset])
+
+    def clear_shaders(self):
+        if self.process:
+            self.messagebox.showwarning('Shaders', 'Feche o jogo antes de limpar o cache de shaders.')
+            return
+        try:
+            removed = clear_shader_cache()
+        except OSError as e:
+            self.messagebox.showerror('Shaders', str(e))
+            return
+        self.messagebox.showinfo('Shaders', f'Cache de shaders limpo ({removed} arquivos).')
 
     def reset_diagnostics(self):
         for key, value in DIAGNOSTICS.items():

@@ -17,6 +17,8 @@ CONFIG_FILE = CONFIG_DIR / 'settings.json'
 GAME_INI = CONFIG_DIR / 'game.ini'
 FRAME_CSV = CONFIG_DIR / 'frames.csv'
 BACKUP_DIR = CONFIG_DIR / 'savedata_backups'
+SHADER_CACHE_DIR = Path(os.environ.get('XDG_CACHE_HOME') or Path.home() / '.cache') / 'gowa-pc'
+SHADER_CACHE_FILES = ('pipelines.vkcache', 'pipelines.manifest')
 SAVEDATA_DIR = PORT / 'gamedata/dev_hdd0/home/00000001/savedata'
 LEGACY_CONFIG_FILE = None if os.environ.get('GOWA_CONFIG_DIR') else CONFIG_ROOT / 'gowa-recomp' / 'settings.json'
 VERSION = 2
@@ -53,7 +55,8 @@ PAD_NAMES = {
 PARALLEL_PRESETS = {'Padrão': '7,13,14,15,16', 'Seguro': ''}
 DIAGNOSTICS = {'frame_csv': False, 'texture_compute': True, 'raw_textures': True,
                'tex_hash_full': False, 'vdec_perf': False, 'kern_threads': 6,
-               'kern_parallel': PARALLEL_PRESETS['Padrão'], 'flip_min_ms': 250}
+               'kern_parallel': PARALLEL_PRESETS['Padrão'], 'flip_min_ms': 250,
+               'shader_cache': True, 'async_shaders': True, 'shader_warmup': True}
 DEFAULTS = {'version': VERSION, 'pad_style': 'playstation', 'keyboard': True, 'rumble': True,
             'stick_deadzone': 7849, 'mangohud': False, 'gamemode': False,
             'diagnostics': copy.deepcopy(DIAGNOSTICS), 'controls': {'key': {}, 'pad': {}}}
@@ -121,7 +124,8 @@ def validate(data):
         raise ValueError('Opções de diagnóstico inválidas.')
     result['diagnostics'] = {**DIAGNOSTICS, **diagnostics}
     diagnostics = result['diagnostics']
-    for key in ('frame_csv', 'texture_compute', 'raw_textures', 'tex_hash_full', 'vdec_perf'):
+    for key in ('frame_csv', 'texture_compute', 'raw_textures', 'tex_hash_full', 'vdec_perf',
+                'shader_cache', 'async_shaders', 'shader_warmup'):
         if type(diagnostics[key]) is not bool:
             raise ValueError(f'Valor inválido: {key}')
     for key, low, high in (('kern_threads', 1, 8), ('flip_min_ms', 0, 5000)):
@@ -223,7 +227,9 @@ def diagnostic_environment(diagnostics, frame_csv=None):
     env = {}
     if diagnostics['frame_csv']:
         env['RSX_FRAME_CSV'] = str(frame_csv or FRAME_CSV)
-    for key, var in (('texture_compute', 'RSX_VK_TEXTURE_COMPUTE'), ('raw_textures', 'RSX_VK_RAW_TEXTURES')):
+    for key, var in (('texture_compute', 'RSX_VK_TEXTURE_COMPUTE'), ('raw_textures', 'RSX_VK_RAW_TEXTURES'),
+                     ('shader_cache', 'GOWA_SHADER_CACHE'), ('async_shaders', 'GOWA_ASYNC_SHADERS'),
+                     ('shader_warmup', 'GOWA_SHADER_WARMUP')):
         if not diagnostics[key]:
             env[var] = '0'
     for key, var in (('tex_hash_full', 'RSX_TEX_HASH_FULL'), ('vdec_perf', 'VDEC_PERF')):
@@ -234,6 +240,19 @@ def diagnostic_environment(diagnostics, frame_csv=None):
         if diagnostics[key] != DIAGNOSTICS[key]:
             env[var] = str(diagnostics[key])
     return env
+
+
+def clear_shader_cache(path=None):
+    path = Path(path or SHADER_CACHE_DIR)
+    victims = [path / name for name in SHADER_CACHE_FILES] + sorted((path / 'spirv').glob('*.spv'))
+    removed = 0
+    for victim in victims:
+        try:
+            victim.unlink()
+            removed += 1
+        except FileNotFoundError:
+            pass
+    return removed
 
 
 def game_environment(data, inherited=None, ini=None, ini_path=None):
