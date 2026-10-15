@@ -1,6 +1,7 @@
 #include "input.h"
 #include "cellPad.h"
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
@@ -32,6 +33,9 @@ bool controller_subsystem = false;
 bool rumble_pending = false;
 bool rumble_enabled = true;
 uint8_t rumble_small = 0, rumble_large = 0;
+std::atomic<bool> captured{false};
+uint16_t suppressed = 0;
+gowa::PadState pad_state;
 
 void read_sample(unsigned port, CellPadHostSample* out) {
     std::lock_guard<std::mutex> lock(state_mutex);
@@ -157,6 +161,17 @@ void gowa_input_tick() {
     }
     bool focused = SDL_GetKeyboardFocus() != nullptr;
     auto next = mapping.sample(SDL_GetKeyboardState(nullptr), buttons, axes, focused);
+    const bool combo = buttons[SDL_CONTROLLER_BUTTON_RIGHTSTICK] &&
+                       axes[SDL_CONTROLLER_AXIS_TRIGGERLEFT] > 16000;
+    if (captured.load(std::memory_order_relaxed) || combo) {
+        suppressed = next.buttons;
+        next = {1, 0, 128, 128, 128, 128, 0, 0};
+    } else {
+        suppressed &= next.buttons;
+        next.buttons &= uint16_t(~suppressed);
+        if (suppressed & CELL_PAD_CTRL_L2) next.l2 = 0;
+        if (suppressed & CELL_PAD_CTRL_R2) next.r2 = 0;
+    }
     static const bool trace = getenv("GOWA_INPUT_TRACE") != nullptr;
     static uint16_t previous_buttons = 0;
     if (trace && next.buttons != previous_buttons) {
@@ -168,6 +183,9 @@ void gowa_input_tick() {
     {
         std::lock_guard<std::mutex> lock(state_mutex);
         current = next;
+        pad_state.connected = controller != nullptr;
+        std::copy(std::begin(buttons), std::end(buttons), pad_state.buttons.begin());
+        std::copy(std::begin(axes), std::end(axes), pad_state.axes.begin());
         pending = rumble_pending; rumble_pending = false;
         small = rumble_small; large = rumble_large;
     }
@@ -188,4 +206,24 @@ void gowa_input_stop() {
     controller_subsystem = false;
     std::lock_guard<std::mutex> lock(state_mutex);
     current = {1, 0, 128, 128, 128, 128, 0, 0};
+}
+
+void gowa_input_set_captured(bool value) { captured.store(value, std::memory_order_relaxed); }
+
+gowa::PadState gowa_input_pad_state() {
+    std::lock_guard<std::mutex> lock(state_mutex);
+    return pad_state;
+}
+
+std::vector<gowa::BindingInfo> gowa_input_bindings() {
+    std::vector<gowa::BindingInfo> out;
+    for (size_t i = 0; i < mapping.keys.size(); ++i) {
+        std::string pad;
+        if (i == 8) pad = "lefttrigger";
+        else if (i == 9) pad = "righttrigger";
+        else if (mapping.buttons[i] != SDL_CONTROLLER_BUTTON_INVALID)
+            pad = SDL_GameControllerGetStringForButton(mapping.buttons[i]);
+        out.push_back({names[i], mapping.keyboard ? SDL_GetScancodeName(mapping.keys[i]) : "-", pad});
+    }
+    return out;
 }

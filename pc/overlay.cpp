@@ -1,5 +1,6 @@
 #include "overlay.h"
 #include "game_ini.h"
+#include "input.h"
 #include "rsx_vulkan_overlay.h"
 #include "imgui.h"
 #include "backends/imgui_impl_vulkan.h"
@@ -12,6 +13,7 @@
 #include <mutex>
 #include <string>
 #include <sys/stat.h>
+#include <vector>
 
 extern "C" unsigned long long cellSpurs_kernel_busy_ns(unsigned wid);
 
@@ -57,6 +59,38 @@ struct Stats {
     unsigned long long spu_sample_busy = 0;
 };
 
+struct PadKey {
+    SDL_GameControllerButton button;
+    ImGuiKey key;
+};
+
+enum WindowRequest : unsigned { request_display = 1u << 0, request_vsync = 1u << 1 };
+
+constexpr PadKey pad_keys[] = {
+    {SDL_CONTROLLER_BUTTON_A, ImGuiKey_GamepadFaceDown},
+    {SDL_CONTROLLER_BUTTON_B, ImGuiKey_GamepadFaceRight},
+    {SDL_CONTROLLER_BUTTON_X, ImGuiKey_GamepadFaceLeft},
+    {SDL_CONTROLLER_BUTTON_Y, ImGuiKey_GamepadFaceUp},
+    {SDL_CONTROLLER_BUTTON_DPAD_UP, ImGuiKey_GamepadDpadUp},
+    {SDL_CONTROLLER_BUTTON_DPAD_DOWN, ImGuiKey_GamepadDpadDown},
+    {SDL_CONTROLLER_BUTTON_DPAD_LEFT, ImGuiKey_GamepadDpadLeft},
+    {SDL_CONTROLLER_BUTTON_DPAD_RIGHT, ImGuiKey_GamepadDpadRight},
+    {SDL_CONTROLLER_BUTTON_LEFTSHOULDER, ImGuiKey_GamepadL1},
+    {SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, ImGuiKey_GamepadR1},
+    {SDL_CONTROLLER_BUTTON_START, ImGuiKey_GamepadStart},
+    {SDL_CONTROLLER_BUTTON_BACK, ImGuiKey_GamepadBack},
+};
+constexpr const char* corner_labels[] = {"Superior esquerdo", "Superior direito", "Inferior esquerdo",
+                                         "Inferior direito"};
+constexpr const char* mode_labels[] = {"Janela", "Janela sem bordas", "Tela cheia exclusiva"};
+constexpr const char* size_labels[] = {"1280x720", "1600x900", "1920x1080", "Monitor"};
+constexpr int size_presets[][2] = {{1280, 720}, {1600, 900}, {1920, 1080}};
+constexpr const char* item_labels[] = {"FPS do jogo", "Tempo de quadro (média e pior)",
+                                       "Gráfico do tempo de quadro", "FPS de apresentação",
+                                       "Ocupação do SPU (EDGE)"};
+constexpr const char* button_labels[] = {"Select", "L3", "R3", "Start", "Direcional ↑", "Direcional →",
+                                         "Direcional ↓", "Direcional ←", "L2", "R2", "L1", "R1",
+                                         "Triângulo", "Círculo", "Cross (X)", "Quadrado"};
 constexpr size_t flip_ring_size = 512;
 constexpr unsigned edge_workloads[] = {13, 14, 15};
 constexpr const char* font_paths[] = {
@@ -71,6 +105,19 @@ std::atomic<uint32_t> flip_total{0};
 std::atomic<uint32_t> present_total{0};
 std::atomic<bool> overlay_visible{false};
 std::atomic<bool> started{false};
+std::atomic<bool> menu_wanted{false};
+std::atomic<unsigned> window_requests{0};
+std::atomic<int> window_width{1280};
+std::atomic<int> window_height{720};
+bool menu_applied = false;
+bool menu_drawn = false;
+bool combo_held = false;
+int menu_tab = 0;
+std::mutex input_mutex;
+std::vector<SDL_Event> queued_events;
+gowa::PadState queued_pad;
+std::array<bool, std::size(pad_keys)> pad_down{};
+std::vector<gowa::BindingInfo> bindings;
 std::mutex settings_mutex;
 gowa::GameIni game_ini;
 Renderer renderer;
@@ -349,26 +396,291 @@ void draw_overlay(const gowa::GameSettings& s) {
     ImGui::PopFont();
 }
 
+ImGuiKey imgui_key(SDL_Keycode key) {
+    switch (key) {
+    case SDLK_TAB: return ImGuiKey_Tab;
+    case SDLK_LEFT: return ImGuiKey_LeftArrow;
+    case SDLK_RIGHT: return ImGuiKey_RightArrow;
+    case SDLK_UP: return ImGuiKey_UpArrow;
+    case SDLK_DOWN: return ImGuiKey_DownArrow;
+    case SDLK_PAGEUP: return ImGuiKey_PageUp;
+    case SDLK_PAGEDOWN: return ImGuiKey_PageDown;
+    case SDLK_HOME: return ImGuiKey_Home;
+    case SDLK_END: return ImGuiKey_End;
+    case SDLK_SPACE: return ImGuiKey_Space;
+    case SDLK_RETURN: return ImGuiKey_Enter;
+    case SDLK_KP_ENTER: return ImGuiKey_KeypadEnter;
+    case SDLK_BACKSPACE: return ImGuiKey_Backspace;
+    case SDLK_LCTRL: return ImGuiKey_LeftCtrl;
+    case SDLK_RCTRL: return ImGuiKey_RightCtrl;
+    case SDLK_LSHIFT: return ImGuiKey_LeftShift;
+    case SDLK_RSHIFT: return ImGuiKey_RightShift;
+    case SDLK_LALT: return ImGuiKey_LeftAlt;
+    case SDLK_q: return ImGuiKey_Q;
+    case SDLK_e: return ImGuiKey_E;
+    case SDLK_RALT: return ImGuiKey_RightAlt;
+    default: return ImGuiKey_None;
+    }
+}
+
+void feed_input() {
+    std::vector<SDL_Event> events;
+    gowa::PadState pad;
+    {
+        std::lock_guard<std::mutex> lock(input_mutex);
+        events.swap(queued_events);
+        pad = queued_pad;
+    }
+    ImGuiIO& io = ImGui::GetIO();
+    const float sx = window_width.load() > 0 ? float(renderer.extent.width) / float(window_width.load()) : 1.0f;
+    const float sy = window_height.load() > 0 ? float(renderer.extent.height) / float(window_height.load()) : 1.0f;
+    for (const SDL_Event& e : events) {
+        switch (e.type) {
+        case SDL_MOUSEMOTION:
+            io.AddMouseSourceEvent(ImGuiMouseSource_Mouse);
+            io.AddMousePosEvent(float(e.motion.x) * sx, float(e.motion.y) * sy);
+            break;
+        case SDL_MOUSEBUTTONDOWN:
+        case SDL_MOUSEBUTTONUP: {
+            const int button = e.button.button == SDL_BUTTON_LEFT ? 0
+                : e.button.button == SDL_BUTTON_RIGHT ? 1 : e.button.button == SDL_BUTTON_MIDDLE ? 2 : -1;
+            io.AddMousePosEvent(float(e.button.x) * sx, float(e.button.y) * sy);
+            if (button >= 0) io.AddMouseButtonEvent(button, e.type == SDL_MOUSEBUTTONDOWN);
+            break;
+        }
+        case SDL_MOUSEWHEEL:
+            io.AddMouseWheelEvent(float(e.wheel.x), float(e.wheel.y));
+            break;
+        case SDL_KEYDOWN:
+        case SDL_KEYUP: {
+            const SDL_Keymod mod = SDL_Keymod(e.key.keysym.mod);
+            io.AddKeyEvent(ImGuiMod_Ctrl, mod & KMOD_CTRL);
+            io.AddKeyEvent(ImGuiMod_Shift, mod & KMOD_SHIFT);
+            io.AddKeyEvent(ImGuiMod_Alt, mod & KMOD_ALT);
+            const ImGuiKey key = imgui_key(e.key.keysym.sym);
+            if (key != ImGuiKey_None) io.AddKeyEvent(key, e.type == SDL_KEYDOWN);
+            break;
+        }
+        default:
+            break;
+        }
+    }
+    for (size_t i = 0; i < std::size(pad_keys); ++i) {
+        const bool down = pad.connected && pad.buttons[pad_keys[i].button];
+        if (down != pad_down[i]) io.AddKeyEvent(pad_keys[i].key, down);
+        pad_down[i] = down;
+    }
+    const float lx = pad.connected ? float(pad.axes[SDL_CONTROLLER_AXIS_LEFTX]) / 32767.0f : 0.0f;
+    const float ly = pad.connected ? float(pad.axes[SDL_CONTROLLER_AXIS_LEFTY]) / 32767.0f : 0.0f;
+    auto stick = [&](ImGuiKey key, float v) {
+        const float a = std::clamp((v - 0.25f) / 0.75f, 0.0f, 1.0f);
+        io.AddKeyAnalogEvent(key, a > 0.1f, a);
+    };
+    stick(ImGuiKey_GamepadLStickLeft, -lx);
+    stick(ImGuiKey_GamepadLStickRight, lx);
+    stick(ImGuiKey_GamepadLStickUp, -ly);
+    stick(ImGuiKey_GamepadLStickDown, ly);
+    if (pad.connected) io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+    else io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
+}
+
+void draw_overlay_tab(gowa::GameSettings& s) {
+    ImGui::Checkbox("Mostrar overlay (F10)", &s.show_fps);
+    int corner = int(s.corner);
+    if (ImGui::Combo("Canto", &corner, corner_labels, int(std::size(corner_labels)))) s.corner = gowa::Corner(corner);
+    ImGui::SliderInt("Escala", &s.overlay_scale, 50, 300, "%d%%", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SliderInt("Opacidade do fundo", &s.overlay_opacity, 0, 100, "%d%%", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SeparatorText("Itens");
+    for (size_t i = 0; i < std::size(item_labels); ++i) {
+        bool on = s.overlay_items & (1u << i);
+        if (ImGui::Checkbox(item_labels[i], &on)) s.overlay_items ^= 1u << i;
+    }
+    ImGui::Spacing();
+    ImGui::TextDisabled("Com o menu aberto o overlay aparece como prévia.");
+    ImGui::TextDisabled("O FPS conta os quadros que o jogo entrega (flips), não as apresentações.");
+}
+
+void draw_image_tab(gowa::GameSettings& s) {
+    int mode = int(s.display_mode);
+    if (ImGui::Combo("Modo de exibição", &mode, mode_labels, int(std::size(mode_labels))))
+        s.display_mode = gowa::DisplayMode(mode);
+    ImGui::Checkbox("VSync", &s.vsync);
+    int size = 3;
+    if (!s.window_monitor)
+        for (int i = 0; i < 3; ++i)
+            if (s.window_width == size_presets[i][0] && s.window_height == size_presets[i][1]) size = i;
+    char custom[32];
+    snprintf(custom, sizeof custom, "%dx%d", s.window_width, s.window_height);
+    const bool preset = s.window_monitor || size < 3;
+    if (ImGui::BeginCombo("Tamanho da janela", preset ? size_labels[size] : custom)) {
+        for (int i = 0; i < 4; ++i) {
+            if (ImGui::Selectable(size_labels[i], preset && size == i)) {
+                s.window_monitor = i == 3;
+                if (i < 3) {
+                    s.window_width = size_presets[i][0];
+                    s.window_height = size_presets[i][1];
+                }
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::Spacing();
+    ImGui::TextWrapped("Tudo aqui vale na hora. O VSync recria a swapchain no próximo quadro "
+                       "(FIFO com VSync; MAILBOX ou IMMEDIATE sem). O tamanho só se aplica no modo janela; "
+                       "em tela cheia vale a resolução do monitor.");
+    ImGui::TextDisabled("Imagem interna do jogo: 1280x720, escalada para a janela.");
+}
+
+void draw_controls_tab() {
+    ImGui::TextWrapped("Mapeamento atual (somente leitura). Para remapear, use o launcher.");
+    ImGui::Spacing();
+    if (ImGui::BeginTable("##bindings", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
+                                              ImGuiTableFlags_ScrollY,
+                          ImVec2(0, ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing() * 3))) {
+        ImGui::TableSetupScrollFreeze(0, 1);
+        ImGui::TableSetupColumn("Botão");
+        ImGui::TableSetupColumn("Teclado / mouse");
+        ImGui::TableSetupColumn("Controle");
+        ImGui::TableHeadersRow();
+        for (const auto& b : bindings) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(b.button.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(b.keys.empty() ? "-" : b.keys.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(b.pad.empty() ? "-" : b.pad.c_str());
+        }
+        ImGui::EndTable();
+    }
+    ImGui::TextDisabled("Analógico esquerdo: WASD. Direito: setas. Reservadas: Insert (menu) e F10 (overlay).");
+    ImGui::TextDisabled("Controle: R3 + L2 abre e fecha este menu.");
+}
+
+const char* device_type(VkPhysicalDeviceType type) {
+    switch (type) {
+    case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: return "dedicada";
+    case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: return "integrada";
+    case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU: return "virtual";
+    case VK_PHYSICAL_DEVICE_TYPE_CPU: return "CPU (software)";
+    default: return "outra";
+    }
+}
+
+const char* present_mode_name(VkPresentModeKHR mode) {
+    switch (mode) {
+    case VK_PRESENT_MODE_FIFO_KHR: return "FIFO (VSync)";
+    case VK_PRESENT_MODE_MAILBOX_KHR: return "MAILBOX";
+    case VK_PRESENT_MODE_IMMEDIATE_KHR: return "IMMEDIATE";
+    default: return "outro";
+    }
+}
+
+void draw_about_tab() {
+    const VkPhysicalDeviceProperties& p = renderer.properties;
+    ImGui::Text("God of War: Ascension (BCUS98232), port nativo");
+    ImGui::Text("Build: %s", GOWA_COMMIT);
+    ImGui::Text("ps3recomp: %s", GOWA_TOOLKIT_COMMIT);
+    ImGui::SeparatorText("GPU");
+    ImGui::Text("Placa: %s", p.deviceName);
+    ImGui::Text("Tipo: %s", device_type(p.deviceType));
+    ImGui::Text("Dispositivo Vulkan: %04x:%04x, API %u.%u.%u, driver 0x%08x", p.vendorID, p.deviceID,
+                VK_API_VERSION_MAJOR(p.apiVersion), VK_API_VERSION_MINOR(p.apiVersion),
+                VK_API_VERSION_PATCH(p.apiVersion), p.driverVersion);
+    ImGui::Text("Swapchain: %ux%u, %u imagens, %s", renderer.extent.width, renderer.extent.height,
+                renderer.image_count, present_mode_name(renderer.present_mode));
+    ImGui::SeparatorText("Arquivos");
+    ImGui::TextWrapped("Opções: %s", game_ini.path.c_str());
+    ImGui::Text("Dear ImGui %s", IMGUI_VERSION);
+}
+
+void request_window_changes(const gowa::GameSettings& before, const gowa::GameSettings& after) {
+    unsigned requests = 0;
+    if (before.display_mode != after.display_mode || before.window_monitor != after.window_monitor ||
+        before.window_width != after.window_width || before.window_height != after.window_height)
+        requests |= request_display;
+    if (before.vsync != after.vsync) requests |= request_vsync;
+    if (requests) window_requests.fetch_or(requests);
+}
+
+void draw_menu(gowa::GameSettings& s) {
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    const float ds = display_scale();
+    const ImVec2 size(std::min(display.x * 0.9f, 640.0f * ds), std::min(display.y * 0.85f, 470.0f * ds));
+    ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(size, ImGuiCond_Always);
+    if (!menu_drawn) ImGui::SetNextWindowFocus();
+    ImGui::SetNextWindowBgAlpha(0.94f);
+    ImGui::PushFont(nullptr, 17.0f * ds);
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings;
+    if (ImGui::Begin("God of War: Ascension — Menu###gowa_menu", nullptr, flags)) {
+        int step = 0;
+        if (ImGui::IsKeyPressed(ImGuiKey_Q, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false)) step = -1;
+        if (ImGui::IsKeyPressed(ImGuiKey_E, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false)) step = 1;
+        const int forced = step ? (menu_tab + step + 4) % 4 : -1;
+        if (ImGui::BeginTabBar("##tabs")) {
+            auto tab = [&](int index, const char* label) {
+                const bool open = ImGui::BeginTabItem(label, nullptr,
+                                                      forced == index ? ImGuiTabItemFlags_SetSelected : 0);
+                if (open) menu_tab = index;
+                return open;
+            };
+            if (tab(0, "Overlay")) { draw_overlay_tab(s); ImGui::EndTabItem(); }
+            if (tab(1, "Imagem")) { draw_image_tab(s); ImGui::EndTabItem(); }
+            if (tab(2, "Controles")) { draw_controls_tab(); ImGui::EndTabItem(); }
+            if (tab(3, "Sobre")) { draw_about_tab(); ImGui::EndTabItem(); }
+            ImGui::EndTabBar();
+        }
+        ImGui::SetCursorPosY(ImGui::GetWindowHeight() - ImGui::GetFrameHeightWithSpacing() -
+                             ImGui::GetStyle().WindowPadding.y);
+        if (ImGui::Button("Fechar")) menu_wanted.store(false);
+        ImGui::SameLine();
+        ImGui::TextDisabled("Q/E ou L1/R1 trocam de aba. Esc, Insert ou R3 + L2 fecham.");
+    }
+    ImGui::End();
+    ImGui::PopFont();
+}
+
 int on_record(VkCommandBuffer cmd, uint32_t image_index, void*) {
     present_total.fetch_add(1, std::memory_order_relaxed);
-    if (!overlay_visible.load(std::memory_order_relaxed)) {
+    const bool menu = menu_wanted.load(std::memory_order_relaxed);
+    if (!overlay_visible.load(std::memory_order_relaxed) && !menu) {
         renderer.last_frame_ns = 0;
+        menu_drawn = false;
         return 0;
     }
     if (!renderer.ready || image_index >= renderer.image_count || !renderer.framebuffers[image_index])
         return 0;
     const uint64_t now = now_ns();
-    const gowa::GameSettings s = settings_snapshot();
+    gowa::GameSettings s = settings_snapshot();
+    const gowa::GameSettings before = s;
     update_stats(now);
     ImGuiIO& io = ImGui::GetIO();
+    if (menu && !menu_drawn) {
+        io.ClearInputKeys();
+        io.ClearInputMouse();
+        pad_down.fill(false);
+    }
+    if (menu) feed_input();
     io.DisplaySize = ImVec2(float(renderer.extent.width), float(renderer.extent.height));
     io.DeltaTime = renderer.last_frame_ns ? std::clamp(float(double(now - renderer.last_frame_ns) / 1e9), 1e-4f, 0.5f)
                                           : 1.0f / 60.0f;
     renderer.last_frame_ns = now;
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();
-    draw_overlay(s);
+    if (s.show_fps || menu) draw_overlay(s);
+    if (menu) draw_menu(s);
+    menu_drawn = menu;
     ImGui::Render();
+    if (!(s == before)) {
+        {
+            std::lock_guard<std::mutex> lock(settings_mutex);
+            game_ini.settings = s;
+        }
+        overlay_visible.store(s.show_fps, std::memory_order_relaxed);
+        request_window_changes(before, s);
+    }
     VkRenderPassBeginInfo begin{};
     begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     begin.renderPass = renderer.render_pass;
@@ -381,18 +693,81 @@ int on_record(VkCommandBuffer cmd, uint32_t image_index, void*) {
 }
 
 int on_event(const SDL_Event* e, void*) {
-    if (e->type != SDL_KEYDOWN || e->key.repeat) return 0;
-    if (e->key.keysym.sym == SDLK_F10) {
-        bool show;
-        {
-            std::lock_guard<std::mutex> lock(settings_mutex);
-            show = game_ini.settings.show_fps = !game_ini.settings.show_fps;
-        }
-        overlay_visible.store(show, std::memory_order_relaxed);
-        save_settings();
-        return 1;
+    if (e->type == SDL_WINDOWEVENT && e->window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+        window_width.store(e->window.data1);
+        window_height.store(e->window.data2);
+        return 0;
     }
-    return 0;
+    const bool menu = menu_wanted.load(std::memory_order_relaxed);
+    if (e->type == SDL_KEYDOWN && !e->key.repeat) {
+        const SDL_Keycode key = e->key.keysym.sym;
+        if (key == SDLK_F10) {
+            bool show;
+            {
+                std::lock_guard<std::mutex> lock(settings_mutex);
+                show = game_ini.settings.show_fps = !game_ini.settings.show_fps;
+            }
+            overlay_visible.store(show, std::memory_order_relaxed);
+            if (!menu) save_settings();
+            return 1;
+        }
+        if (key == SDLK_INSERT || (key == SDLK_ESCAPE && menu)) {
+            menu_wanted.store(!menu);
+            return 1;
+        }
+        if (key == SDLK_ESCAPE) return 1;
+    }
+    if (!menu) return 0;
+    switch (e->type) {
+    case SDL_KEYDOWN:
+    case SDL_KEYUP:
+    case SDL_MOUSEMOTION:
+    case SDL_MOUSEBUTTONDOWN:
+    case SDL_MOUSEBUTTONUP:
+    case SDL_MOUSEWHEEL: {
+        std::lock_guard<std::mutex> lock(input_mutex);
+        if (queued_events.size() < 512) queued_events.push_back(*e);
+        return e->type == SDL_KEYDOWN || e->type == SDL_KEYUP;
+    }
+    default:
+        return 0;
+    }
+}
+
+void apply_window(const gowa::GameSettings& s, unsigned requests) {
+    if (requests & request_vsync) rsx_vulkan_backend_set_vsync(s.vsync);
+    SDL_Window* window = rsx_vulkan_backend_window();
+    if (!(requests & request_display) || !window) return;
+    const int display = std::max(0, SDL_GetWindowDisplayIndex(window));
+    switch (s.display_mode) {
+    case gowa::DisplayMode::borderless:
+        SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+        break;
+    case gowa::DisplayMode::fullscreen: {
+        SDL_DisplayMode mode;
+        if (SDL_GetDesktopDisplayMode(display, &mode) == 0) SDL_SetWindowDisplayMode(window, &mode);
+        if (SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN) != 0)
+            fprintf(stderr, "[overlay] exclusive fullscreen: %s\n", SDL_GetError());
+        break;
+    }
+    case gowa::DisplayMode::windowed: {
+        SDL_SetWindowFullscreen(window, 0);
+        SDL_Rect bounds{0, 0, s.window_width, s.window_height};
+        if (s.window_monitor && SDL_GetDisplayUsableBounds(display, &bounds) == 0) {
+            SDL_SetWindowSize(window, bounds.w, bounds.h);
+            SDL_SetWindowPosition(window, bounds.x, bounds.y);
+        } else {
+            SDL_SetWindowSize(window, s.window_width, s.window_height);
+            SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED_DISPLAY(display),
+                                  SDL_WINDOWPOS_CENTERED_DISPLAY(display));
+        }
+        break;
+    }
+    }
+    int w = 0, h = 0;
+    SDL_GetWindowSize(window, &w, &h);
+    window_width.store(w);
+    window_height.store(h);
 }
 
 void setup_imgui() {
@@ -401,6 +776,7 @@ void setup_imgui() {
     io.IniFilename = nullptr;
     io.LogFilename = nullptr;
     io.BackendPlatformName = "gowa-pc";
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
     ImGui::StyleColorsDark();
     ImGuiStyle& style = ImGui::GetStyle();
     style.WindowRounding = 6.0f;
@@ -433,11 +809,40 @@ void gowa_overlay_start() {
     hooks.swapchain_lost = on_swapchain_lost;
     hooks.record = on_record;
     hooks.event = on_event;
+    bindings = gowa_input_bindings();
+    for (size_t i = 0; i < bindings.size() && i < std::size(button_labels); ++i) bindings[i].button = button_labels[i];
+    if (SDL_Window* window = rsx_vulkan_backend_window()) {
+        int w = 0, h = 0;
+        SDL_GetWindowSize(window, &w, &h);
+        window_width.store(w);
+        window_height.store(h);
+    }
     if (rsx_vulkan_overlay_register(&hooks) != 0) {
         fprintf(stderr, "[overlay] no window swapchain; overlay disabled\n");
         return;
     }
+    if (game_ini.existed) window_requests.store(request_display | request_vsync);
     started.store(true);
 }
 
-void gowa_overlay_tick() {}
+void gowa_overlay_tick() {
+    if (!started.load(std::memory_order_relaxed)) return;
+    const gowa::PadState pad = gowa_input_pad_state();
+    const bool combo = pad.connected && pad.buttons[SDL_CONTROLLER_BUTTON_RIGHTSTICK] &&
+                       pad.axes[SDL_CONTROLLER_AXIS_TRIGGERLEFT] > 16000;
+    if (combo && !combo_held) menu_wanted.store(!menu_wanted.load());
+    combo_held = combo;
+    const bool menu = menu_wanted.load();
+    if (menu) {
+        std::lock_guard<std::mutex> lock(input_mutex);
+        queued_pad = pad;
+    }
+    if (menu != menu_applied) {
+        menu_applied = menu;
+        gowa_input_set_captured(menu);
+        if (!menu) save_settings();
+        fprintf(stderr, "[overlay] menu %s\n", menu ? "open" : "closed");
+    }
+    const unsigned requests = window_requests.exchange(0);
+    if (requests) apply_window(settings_snapshot(), requests);
+}

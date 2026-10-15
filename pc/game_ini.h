@@ -19,6 +19,7 @@ struct GameSettings {
     int overlay_scale = 100;
     int overlay_opacity = 80;
     unsigned overlay_items = item_fps | item_frametime;
+    std::string overlay_items_extra;
     DisplayMode display_mode = DisplayMode::windowed;
     bool vsync = true;
     bool window_monitor = false;
@@ -38,6 +39,6 @@ std::string game_ini_path();
 GameIni load_game_ini(const std::string& path);
 std::string render_game_ini(const std::vector<std::string>& lines, const GameSettings& settings);
 bool save_game_ini(GameIni& ini);
-unsigned parse_overlay_items(const std::string& text);
-std::string format_overlay_items(unsigned items);
+unsigned parse_overlay_items(const std::string& text, std::string* extra = nullptr);
+std::string format_overlay_items(unsigned items, const std::string& extra = {});
 }

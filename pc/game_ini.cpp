@@ -63,7 +63,7 @@ void apply(gowa::GameSettings& s, const std::string& key, const std::string& val
     else if (key == "vsync" && (value == "0" || value == "1")) s.vsync = value == "1";
     else if (key == "overlay_scale" && parse_int(value, 50, 300, n)) s.overlay_scale = n;
     else if (key == "overlay_opacity" && parse_int(value, 0, 100, n)) s.overlay_opacity = n;
-    else if (key == "overlay_items") s.overlay_items = gowa::parse_overlay_items(value);
+    else if (key == "overlay_items") s.overlay_items = gowa::parse_overlay_items(value, &s.overlay_items_extra);
     else if (key == "overlay_corner" && (n = find_name(corner_names, value)) >= 0)
         s.corner = gowa::Corner(n);
     else if (key == "display_mode" && (n = find_name(mode_names, value)) >= 0)
@@ -86,7 +86,7 @@ std::map<std::string, std::string> encode(const gowa::GameSettings& s) {
     v["overlay_corner"] = corner_names[int(s.corner)];
     v["overlay_scale"] = std::to_string(s.overlay_scale);
     v["overlay_opacity"] = std::to_string(s.overlay_opacity);
-    v["overlay_items"] = gowa::format_overlay_items(s.overlay_items);
+    v["overlay_items"] = gowa::format_overlay_items(s.overlay_items, s.overlay_items_extra);
     v["display_mode"] = mode_names[int(s.display_mode)];
     v["vsync"] = s.vsync ? "1" : "0";
     v["window_size"] = s.window_monitor ? "monitor"
@@ -104,24 +104,28 @@ bool make_dirs(const std::string& dir) {
 }
 }
 
-unsigned gowa::parse_overlay_items(const std::string& text) {
+unsigned gowa::parse_overlay_items(const std::string& text, std::string* extra) {
     unsigned items = 0;
+    if (extra) extra->clear();
     std::istringstream stream(text);
     std::string part;
     while (std::getline(stream, part, ',')) {
-        const int i = find_name(item_names, trim(part));
+        part = trim(part);
+        const int i = find_name(item_names, part);
         if (i >= 0) items |= 1u << i;
+        else if (extra && !part.empty()) *extra += (extra->empty() ? "" : ",") + part;
     }
     return items;
 }
 
-std::string gowa::format_overlay_items(unsigned items) {
+std::string gowa::format_overlay_items(unsigned items, const std::string& extra) {
     std::string out;
     for (size_t i = 0; i < std::size(item_names); ++i) {
         if (!(items & (1u << i))) continue;
         if (!out.empty()) out += ',';
         out += item_names[i];
     }
+    if (!extra.empty()) out += (out.empty() ? "" : ",") + extra;
     return out;
 }
 
