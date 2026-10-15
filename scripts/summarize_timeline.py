@@ -6,7 +6,8 @@ from pathlib import Path
 
 RECORD = struct.Struct('<QIHHII')
 NAMES = {1: 'pm+', 2: 'pm-', 3: 'drain+', 4: 'drain-', 5: 'present', 6: 'usleep+', 7: 'usleep-',
-         8: 'task+', 9: 'task-', 10: 'wait+', 11: 'wait-', 12: 'gpu+', 13: 'gpu-', 14: 'flip', 15: 'report'}
+         8: 'task+', 9: 'task-', 10: 'wait+', 11: 'wait-', 12: 'gpu+', 13: 'gpu-', 14: 'flip', 15: 'report',
+         16: 'vdec-decode', 17: 'vdec-picture'}
 PAIRS = {1: 2, 3: 4, 6: 7, 8: 9, 10: 11, 12: 13}
 
 

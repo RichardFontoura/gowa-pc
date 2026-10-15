@@ -219,6 +219,18 @@ class GameIniTests(unittest.TestCase):
             self.assertIn('overlay_items=fps,newthing\n', path.read_text())
             self.assertIn('overlay_opacity=40\n', path.read_text())
 
+    def test_video_item_roundtrips_next_to_unknown_items(self):
+        self.assertIn('video', game_ini.OVERLAY_ITEMS)
+        self.assertNotIn('video', game_ini.DEFAULTS['overlay_items'])
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'game.ini'
+            path.write_text('overlay_items=fps,futureitem\n')
+            values = game_ini.read(path)
+            values['overlay_items'] = [i for i in game_ini.OVERLAY_ITEMS if i in ('fps', 'video')] + ['futureitem']
+            self.assertTrue(game_ini.write(path, values))
+            self.assertEqual(path.read_text(), 'overlay_items=fps,video,futureitem\n')
+            self.assertEqual(game_ini.read(path)['overlay_items'], ['fps', 'video', 'futureitem'])
+
     def test_validate_rejects_out_of_range(self):
         for change in ({'overlay_scale': 49}, {'overlay_opacity': 101}, {'window_size': 'huge'},
                        {'display_mode': 'kiosk'}, {'overlay_corner': 'center'}):

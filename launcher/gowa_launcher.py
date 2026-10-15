@@ -33,7 +33,8 @@ SIZE_LABELS = {'1280x720': '1280 × 720', '1600x900': '1600 × 900', '1920x1080'
 CORNER_LABELS = {'tl': 'Superior esquerdo', 'tr': 'Superior direito',
                  'bl': 'Inferior esquerdo', 'br': 'Inferior direito'}
 ITEM_LABELS = {'fps': 'FPS', 'frametime': 'Tempo de quadro', 'graph': 'Gráfico',
-               'present': 'Apresentação', 'spu': 'SPU', 'shaders': 'Shaders'}
+               'present': 'Apresentação', 'spu': 'SPU', 'shaders': 'Shaders',
+               'video': 'Vídeo'}
 FLIP_LABELS = {'250': 'Padrão', '500': 'Conservador', '1500': 'Muito conservador',
                '0': 'Desligado (pode travar)'}
 PARALLEL_LABELS = {'Padrão': 'Padrão (7,13,14,15,16)', 'Seguro': 'Seguro (tudo em série)',

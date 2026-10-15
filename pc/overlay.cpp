@@ -16,6 +16,9 @@
 #include <vector>
 
 extern "C" unsigned long long cellSpurs_kernel_busy_ns(unsigned wid);
+extern "C" uint64_t ps3recomp_vdec_now_ns(void);
+extern "C" uint32_t ps3recomp_vdec_pictures_in_last_second(uint64_t now_ns);
+extern "C" uint64_t ps3recomp_vdec_last_picture_ns(void);
 
 namespace {
 struct VulkanFns {
@@ -61,6 +64,8 @@ struct Stats {
     float shader_worst_ms = 0;
     float shader_window_ms = 0;
     uint64_t shader_sample_ns = 0;
+    uint32_t video_fps = 0;
+    bool video_playing = false;
 };
 
 struct PadKey {
@@ -91,7 +96,8 @@ constexpr const char* size_labels[] = {"1280x720", "1600x900", "1920x1080", "Mon
 constexpr int size_presets[][2] = {{1280, 720}, {1600, 900}, {1920, 1080}};
 constexpr const char* item_labels[] = {"FPS do jogo", "Tempo de quadro (média e pior)",
                                        "Gráfico do tempo de quadro", "FPS de apresentação",
-                                       "Ocupação do SPU (EDGE)", "Compilação de shaders"};
+                                       "Ocupação do SPU (EDGE)", "Compilação de shaders",
+                                       "Vídeo (quadros do filme por segundo)"};
 constexpr const char* button_labels[] = {"Select", "L3", "R3", "Start", "Direcional ↑", "Direcional →",
                                          "Direcional ↓", "Direcional ←", "L2", "R2", "L1", "R1",
                                          "Triângulo", "Círculo", "Cross (X)", "Quadrado"};
@@ -103,6 +109,7 @@ constexpr const char* font_paths[] = {
     "/usr/share/fonts/dejavu/DejaVuSans.ttf",
 };
 constexpr float base_font_px = 16.0f;
+constexpr uint64_t video_idle_ns = 500000000ull;
 
 std::array<std::atomic<uint64_t>, flip_ring_size> flip_ns;
 std::atomic<uint32_t> flip_total{0};
@@ -317,6 +324,13 @@ void draw_shader_note() {
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Compilando shaders: %u", stats.shaders.pending);
 }
 
+void update_video_stats() {
+    const uint64_t now = ps3recomp_vdec_now_ns();
+    const uint64_t last = ps3recomp_vdec_last_picture_ns();
+    stats.video_playing = last && now - last <= video_idle_ns;
+    stats.video_fps = stats.video_playing ? ps3recomp_vdec_pictures_in_last_second(now) : 0;
+}
+
 void update_stats(uint64_t now) {
     const uint32_t total = flip_total.load(std::memory_order_acquire);
     const uint32_t n = std::min<uint32_t>(total, flip_ring_size - 8);
@@ -364,6 +378,7 @@ void update_stats(uint64_t now) {
         stats.spu_sample_busy = busy;
     }
     update_shader_stats(now);
+    update_video_stats();
 }
 
 float display_scale() {
@@ -414,6 +429,8 @@ void draw_overlay(const gowa::GameSettings& s) {
         if (s.overlay_items & gowa::item_shaders)
             ImGui::Text("Shaders %s ms (%u pipelines)", decimal(stats.shader_worst_ms, 1).c_str(),
                         stats.shaders.pipelines);
+        if ((s.overlay_items & gowa::item_video) && stats.video_playing)
+            ImGui::Text("Vídeo: %u fps", stats.video_fps);
         draw_shader_note();
     }
     ImGui::End();

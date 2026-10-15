@@ -60,6 +60,11 @@ int main() {
 
     assert(gowa::parse_overlay_items("fps,shaders") == (gowa::item_fps | gowa::item_shaders));
     assert(gowa::format_overlay_items(gowa::item_shaders) == "shaders");
+    std::string extra;
+    const unsigned with_video = gowa::parse_overlay_items("video,hud,fps", &extra);
+    assert(with_video == (gowa::item_fps | gowa::item_video) && extra == "hud");
+    assert(gowa::format_overlay_items(with_video, extra) == "fps,video,hud");
+    assert(gowa::parse_overlay_items("fps,frametime") == (gowa::item_fps | gowa::item_frametime));
     unlink(path.c_str());
     rmdir((std::string(folder) + "/sub").c_str());
     rmdir(folder);

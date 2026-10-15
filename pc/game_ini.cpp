@@ -12,7 +12,7 @@
 #include <unistd.h>
 
 namespace {
-constexpr const char* item_names[] = {"fps", "frametime", "graph", "present", "spu", "shaders"};
+constexpr const char* item_names[] = {"fps", "frametime", "graph", "present", "spu", "shaders", "video"};
 constexpr const char* corner_names[] = {"tl", "tr", "bl", "br"};
 constexpr const char* mode_names[] = {"windowed", "borderless", "fullscreen"};
 constexpr const char* known_keys[] = {"show_fps", "overlay_corner", "overlay_scale",
