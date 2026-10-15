@@ -4,13 +4,17 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <iterator>
 #include <mutex>
 #include <sstream>
 #include <string>
 
 namespace {
 constexpr const char* names[] = {"select", "l3", "r3", "start", "up", "right",
-    "down", "left", "l2", "r2", "l1", "r1", "triangle", "circle", "cross", "square"};
+    "down", "left", "l2", "r2", "l1", "r1", "triangle", "circle", "cross", "square", "evade_mod"};
+constexpr const char* mouse_names[] = {"Mouse Left", "Mouse Middle", "Mouse Right", "Mouse X1", "Mouse X2"};
+constexpr const char* default_keys[] = {"Tab", "Left Ctrl", "Mouse Middle|C", "Escape|Return", "1", "2",
+    "3", "4", "Q", "R", "Left Shift", "E", "Mouse Right|I", "F|L", "Space|K", "Mouse Left|J", "Left Alt"};
 std::string trim(std::string s) {
     const auto a = s.find_first_not_of(" \t\r\n"), b = s.find_last_not_of(" \t\r\n");
     return a == std::string::npos ? "" : s.substr(a, b - a + 1);
@@ -21,6 +25,37 @@ uint8_t axis(int raw, int deadzone) {
     return uint8_t(128 + (raw - deadzone) * 127 / (32767 - deadzone));
 }
 uint8_t trigger(int raw) { return uint8_t(std::clamp(raw, 0, 32767) * 255 / 32767); }
+bool parse_binding(const std::string& text, gowa::Binding& out) {
+    for (size_t i = 0; i < std::size(mouse_names); ++i) {
+        if (SDL_strcasecmp(text.c_str(), mouse_names[i]) == 0) {
+            out = {gowa::BindingKind::mouse, int(i) + 1};
+            return true;
+        }
+    }
+    const SDL_Scancode code = SDL_GetScancodeFromName(text.c_str());
+    if (code == SDL_SCANCODE_UNKNOWN || code == SDL_SCANCODE_INSERT || code == SDL_SCANCODE_F10) return false;
+    out = {gowa::BindingKind::key, int(code)};
+    return true;
+}
+bool parse_pair(const std::string& value, gowa::BindingPair& out, const std::string& entry) {
+    gowa::BindingPair pair{};
+    size_t count = 0;
+    std::istringstream stream(value);
+    std::string part;
+    while (std::getline(stream, part, '|')) {
+        part = trim(part);
+        gowa::Binding binding;
+        if (part.empty()) continue;
+        if (count == pair.size() || !parse_binding(part, binding)) {
+            fprintf(stderr, "[input] ignored key %s in binding: %s\n", part.c_str(), entry.c_str());
+            continue;
+        }
+        pair[count++] = binding;
+    }
+    if (!count) return false;
+    out = pair;
+    return true;
+}
 uint8_t key_axis(Uint8 neg, Uint8 pos, uint8_t previous) {
     if (!neg && !pos) return previous;
     return neg == pos ? 128 : (neg ? 0 : 255);
@@ -49,18 +84,16 @@ void set_rumble(unsigned port, uint8_t small, uint8_t large) {
 }
 
 gowa::InputMapping::InputMapping()
-    : keys{SDL_SCANCODE_TAB, SDL_SCANCODE_Z, SDL_SCANCODE_C, SDL_SCANCODE_RETURN,
-           SDL_SCANCODE_I, SDL_SCANCODE_L, SDL_SCANCODE_K, SDL_SCANCODE_J,
-           SDL_SCANCODE_R, SDL_SCANCODE_F, SDL_SCANCODE_1, SDL_SCANCODE_3,
-           SDL_SCANCODE_Q, SDL_SCANCODE_LSHIFT, SDL_SCANCODE_SPACE, SDL_SCANCODE_E},
-      buttons{SDL_CONTROLLER_BUTTON_BACK, SDL_CONTROLLER_BUTTON_LEFTSTICK,
+    : buttons{SDL_CONTROLLER_BUTTON_BACK, SDL_CONTROLLER_BUTTON_LEFTSTICK,
               SDL_CONTROLLER_BUTTON_RIGHTSTICK, SDL_CONTROLLER_BUTTON_START,
               SDL_CONTROLLER_BUTTON_DPAD_UP, SDL_CONTROLLER_BUTTON_DPAD_RIGHT,
               SDL_CONTROLLER_BUTTON_DPAD_DOWN, SDL_CONTROLLER_BUTTON_DPAD_LEFT,
               SDL_CONTROLLER_BUTTON_INVALID, SDL_CONTROLLER_BUTTON_INVALID,
               SDL_CONTROLLER_BUTTON_LEFTSHOULDER, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER,
               SDL_CONTROLLER_BUTTON_Y, SDL_CONTROLLER_BUTTON_B,
-              SDL_CONTROLLER_BUTTON_A, SDL_CONTROLLER_BUTTON_X} {}
+              SDL_CONTROLLER_BUTTON_A, SDL_CONTROLLER_BUTTON_X} {
+    for (size_t i = 0; i < keys.size(); ++i) parse_pair(default_keys[i], keys[i], default_keys[i]);
+}
 
 void gowa::InputMapping::configure(const char* key_map, const char* pad_map) {
     for (int kind = 0; kind < 2; ++kind) {
@@ -68,6 +101,7 @@ void gowa::InputMapping::configure(const char* key_map, const char* pad_map) {
         std::istringstream stream(text ? text : "");
         std::string entry;
         while (std::getline(stream, entry, ',')) {
+            if (trim(entry).empty()) continue;
             auto eq = entry.find('=');
             std::string name = trim(entry.substr(0, eq));
             std::string value = eq == std::string::npos ? "" : trim(entry.substr(eq + 1));
@@ -76,12 +110,10 @@ void gowa::InputMapping::configure(const char* key_map, const char* pad_map) {
             if (valid) {
                 size_t i = it - std::begin(names);
                 if (!kind) {
-                    auto code = SDL_GetScancodeFromName(value.c_str());
-                    valid = code != SDL_SCANCODE_UNKNOWN && code != SDL_SCANCODE_INSERT;
-                    if (valid) keys[i] = code;
+                    valid = parse_pair(value, keys[i], entry);
                 } else {
                     auto button = SDL_GameControllerGetButtonFromString(value.c_str());
-                    valid = button != SDL_CONTROLLER_BUTTON_INVALID && i != 8 && i != 9;
+                    valid = button != SDL_CONTROLLER_BUTTON_INVALID && i < buttons.size() && i != 8 && i != 9;
                     if (valid) buttons[i] = button;
                 }
             }
@@ -91,12 +123,20 @@ void gowa::InputMapping::configure(const char* key_map, const char* pad_map) {
     }
 }
 
-CellPadHostSample gowa::InputMapping::sample(const Uint8* k, const Uint8* b,
+bool gowa::InputMapping::held(size_t slot, const Uint8* k, Uint32 mouse) const {
+    for (const Binding& b : keys[slot]) {
+        if (b.kind == BindingKind::key && k && k[b.code]) return true;
+        if (b.kind == BindingKind::mouse && (mouse & SDL_BUTTON(b.code))) return true;
+    }
+    return false;
+}
+
+CellPadHostSample gowa::InputMapping::sample(const Uint8* k, Uint32 mouse, const Uint8* b,
                                             const Sint16* a, bool focused) const {
     CellPadHostSample s{1, 0, 128, 128, 128, 128, 0, 0};
     if (!focused) return s;
-    for (size_t i = 0; i < keys.size(); ++i) {
-        if ((keyboard && k && k[keys[i]]) || (b && buttons[i] >= 0 && b[buttons[i]]))
+    for (size_t i = 0; i < buttons.size(); ++i) {
+        if ((keyboard && held(i, k, mouse)) || (b && buttons[i] >= 0 && b[buttons[i]]))
             s.buttons |= uint16_t(1u << i);
     }
     if (a) {
@@ -111,14 +151,28 @@ CellPadHostSample gowa::InputMapping::sample(const Uint8* k, const Uint8* b,
         if (s.r2 > 23) s.buttons |= CELL_PAD_CTRL_R2;
     }
     if (keyboard && k) {
-        s.lx = key_axis(k[SDL_SCANCODE_A], k[SDL_SCANCODE_D], s.lx);
-        s.ly = key_axis(k[SDL_SCANCODE_W], k[SDL_SCANCODE_S], s.ly);
+        const bool evade = held(evade_mod_slot, k, mouse);
+        if (!evade) {
+            s.lx = key_axis(k[SDL_SCANCODE_A], k[SDL_SCANCODE_D], s.lx);
+            s.ly = key_axis(k[SDL_SCANCODE_W], k[SDL_SCANCODE_S], s.ly);
+        }
         s.rx = key_axis(k[SDL_SCANCODE_LEFT], k[SDL_SCANCODE_RIGHT], s.rx);
         s.ry = key_axis(k[SDL_SCANCODE_UP], k[SDL_SCANCODE_DOWN], s.ry);
-        if (k[keys[8]]) s.l2 = 255;
-        if (k[keys[9]]) s.r2 = 255;
+        if (evade) {
+            s.rx = key_axis(k[SDL_SCANCODE_A], k[SDL_SCANCODE_D], s.rx);
+            s.ry = key_axis(k[SDL_SCANCODE_W], k[SDL_SCANCODE_S], s.ry);
+        }
+        if (held(8, k, mouse)) s.l2 = 255;
+        if (held(9, k, mouse)) s.r2 = 255;
     }
     return s;
+}
+
+std::string gowa::binding_name(const Binding& b) {
+    if (b.kind == BindingKind::mouse && b.code >= 1 && b.code <= int(std::size(mouse_names)))
+        return mouse_names[b.code - 1];
+    if (b.kind == BindingKind::key) return SDL_GetScancodeName(SDL_Scancode(b.code));
+    return "";
 }
 
 void gowa_input_register() { cellPad_set_host_adapter(read_sample, set_rumble); }
@@ -133,7 +187,8 @@ void gowa_input_start() {
     rumble_enabled = !rumble || std::string(rumble) != "0";
     controller_subsystem = SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) == 0;
     if (!controller_subsystem) fprintf(stderr, "[input] controller init: %s\n", SDL_GetError());
-    fprintf(stderr, "[input] PC adapter ready: WASD / arrows, Space=Cross, Enter=Start, Tab=Select\n");
+    fprintf(stderr, "[input] PC adapter ready: WASD / arrows, Left Alt+WASD = right stick, "
+                    "Space=Cross, F=Circle, Escape/Enter=Start, Tab=Select\n");
 }
 
 void gowa_input_tick() {
@@ -160,7 +215,8 @@ void gowa_input_tick() {
             axes[i] = SDL_GameControllerGetAxis(controller, SDL_GameControllerAxis(i));
     }
     bool focused = SDL_GetKeyboardFocus() != nullptr;
-    auto next = mapping.sample(SDL_GetKeyboardState(nullptr), buttons, axes, focused);
+    const Uint32 mouse = focused ? SDL_GetMouseState(nullptr, nullptr) : 0;
+    auto next = mapping.sample(SDL_GetKeyboardState(nullptr), mouse, buttons, axes, focused);
     const bool combo = buttons[SDL_CONTROLLER_BUTTON_RIGHTSTICK] &&
                        axes[SDL_CONTROLLER_AXIS_TRIGGERLEFT] > 16000;
     if (captured.load(std::memory_order_relaxed) || combo) {
@@ -221,9 +277,16 @@ std::vector<gowa::BindingInfo> gowa_input_bindings() {
         std::string pad;
         if (i == 8) pad = "lefttrigger";
         else if (i == 9) pad = "righttrigger";
-        else if (mapping.buttons[i] != SDL_CONTROLLER_BUTTON_INVALID)
+        else if (i < mapping.buttons.size() && mapping.buttons[i] != SDL_CONTROLLER_BUTTON_INVALID)
             pad = SDL_GameControllerGetStringForButton(mapping.buttons[i]);
-        out.push_back({names[i], mapping.keyboard ? SDL_GetScancodeName(mapping.keys[i]) : "-", pad});
+        std::string keys;
+        for (const auto& binding : mapping.keys[i]) {
+            const std::string name = gowa::binding_name(binding);
+            if (name.empty()) continue;
+            if (!keys.empty()) keys += " | ";
+            keys += name;
+        }
+        out.push_back({names[i], mapping.keyboard ? keys : "-", pad});
     }
     return out;
 }

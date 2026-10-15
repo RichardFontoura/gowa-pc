@@ -16,16 +16,25 @@ struct BindingInfo {
     std::string keys;
     std::string pad;
 };
+enum class BindingKind { none, key, mouse };
+struct Binding {
+    BindingKind kind = BindingKind::none;
+    int code = 0;
+};
+using BindingPair = std::array<Binding, 2>;
+constexpr size_t evade_mod_slot = 16;
 struct InputMapping {
-    std::array<SDL_Scancode, 16> keys;
+    std::array<BindingPair, 17> keys;
     std::array<SDL_GameControllerButton, 16> buttons;
     int deadzone = 7849;
     bool keyboard = true;
     InputMapping();
     void configure(const char* key_map, const char* pad_map);
-    CellPadHostSample sample(const Uint8* keyboard_state, const Uint8* pad_buttons,
+    bool held(size_t slot, const Uint8* keyboard_state, Uint32 mouse_buttons) const;
+    CellPadHostSample sample(const Uint8* keyboard_state, Uint32 mouse_buttons, const Uint8* pad_buttons,
                             const Sint16* axes, bool focused) const;
 };
+std::string binding_name(const Binding& binding);
 }
 
 void gowa_input_register();

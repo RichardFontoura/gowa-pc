@@ -104,7 +104,7 @@ def main():
                             fields = stat[stat.rindex(')') + 2:].split()
                             threads.append(dict(tid=int(task.name), name=stat[stat.index('(') + 1:stat.rindex(')')],
                                                 user_ticks=int(fields[11]), system_ticks=int(fields[12])))
-                        except FileNotFoundError:
+                        except (FileNotFoundError, ProcessLookupError):
                             pass
                     cpu.write(json.dumps(dict(seconds=elapsed, threads=threads)) + '\n')
                     cpu.flush()

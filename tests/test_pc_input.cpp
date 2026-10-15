@@ -33,7 +33,16 @@ int main() {
     gowa::InputMapping m;
     Uint8 k[SDL_NUM_SCANCODES]{}, b[SDL_CONTROLLER_BUTTON_MAX]{};
     Sint16 a[SDL_CONTROLLER_AXIS_MAX]{};
-    auto sample = [&] { return m.sample(k, b, a, true); };
+    Uint32 mouse = 0;
+    auto sample = [&] { return m.sample(k, mouse, b, a, true); };
+    auto names = [&](size_t slot) {
+        return gowa::binding_name(m.keys[slot][0]) + "|" + gowa::binding_name(m.keys[slot][1]);
+    };
+    assert(names(14) == "Space|K" && names(13) == "F|L" && names(15) == "Mouse Left|J");
+    assert(names(12) == "Mouse Right|I" && names(2) == "Mouse Middle|C" && names(3) == "Escape|Return");
+    assert(names(10) == "Left Shift|" && names(11) == "E|" && names(8) == "Q|" && names(9) == "R|");
+    assert(names(1) == "Left Ctrl|" && names(0) == "Tab|" && names(4) == "1|" && names(7) == "4|");
+    assert(names(gowa::evade_mod_slot) == "Left Alt|");
     auto s = sample();
     assert(s.buttons == 0 && s.lx == 128 && s.ry == 128);
     k[SDL_SCANCODE_SPACE] = k[SDL_SCANCODE_W] = k[SDL_SCANCODE_LEFT] = 1;
@@ -41,16 +50,42 @@ int main() {
     assert(s.buttons == CELL_PAD_CTRL_CROSS && s.ly == 0 && s.rx == 0);
     k[SDL_SCANCODE_S] = 1;
     assert(sample().ly == 128);  // opposite directions cancel
-    s = m.sample(k, b, a, false);
+    s = m.sample(k, mouse, b, a, false);
     assert(s.buttons == 0 && s.ly == 128 && s.rx == 128);  // focus loss
     memset(k, 0, sizeof(k));
-    m.configure("cross=V,circle=Escape,square=Not A Key,start=Insert", "cross=b,circle=a,l2=x");
+    k[SDL_SCANCODE_K] = k[SDL_SCANCODE_F] = 1;
+    mouse = SDL_BUTTON(SDL_BUTTON_LEFT) | SDL_BUTTON(SDL_BUTTON_RIGHT);
+    s = sample();
+    assert(s.buttons == (CELL_PAD_CTRL_CROSS | CELL_PAD_CTRL_CIRCLE | CELL_PAD_CTRL_SQUARE |
+                         CELL_PAD_CTRL_TRIANGLE));
+    memset(k, 0, sizeof(k));
+    mouse = 0;
+    k[SDL_SCANCODE_LALT] = k[SDL_SCANCODE_D] = k[SDL_SCANCODE_W] = 1;
+    s = sample();
+    assert(s.lx == 128 && s.ly == 128 && s.rx == 255 && s.ry == 0 && s.buttons == 0);
+    k[SDL_SCANCODE_LALT] = 0;
+    s = sample();
+    assert(s.lx == 255 && s.ly == 0 && s.rx == 128);
+    memset(k, 0, sizeof(k));
+    k[SDL_SCANCODE_Q] = 1;
+    s = sample();
+    assert(s.buttons == CELL_PAD_CTRL_L2 && s.l2 == 255);
+    memset(k, 0, sizeof(k));
+    m.configure("", nullptr);
+    assert(names(14) == "Space|K");
+    m.configure("cross=V|Mouse X1|B,circle=Escape,square=Not A Key,start=Insert,select=F10,"
+                "r1=Insert|G,evade_mod=Right Alt", "cross=b,circle=a,l2=x");
+    assert(names(14) == "V|Mouse X1" && names(3) == "Escape|Return" && names(0) == "Tab|");
+    assert(names(11) == "G|" && names(gowa::evade_mod_slot) == "Right Alt|");
+    mouse = SDL_BUTTON(SDL_BUTTON_X1);
+    assert(sample().buttons == CELL_PAD_CTRL_CROSS);
+    mouse = 0;
     k[SDL_SCANCODE_SPACE] = 1;
     assert(!(sample().buttons & CELL_PAD_CTRL_CROSS));  // old binding removed
     k[SDL_SCANCODE_V] = k[SDL_SCANCODE_ESCAPE] = 1;
     assert((sample().buttons & (CELL_PAD_CTRL_CROSS | CELL_PAD_CTRL_CIRCLE)) ==
            (CELL_PAD_CTRL_CROSS | CELL_PAD_CTRL_CIRCLE));
-    assert(m.keys[15] == SDL_SCANCODE_E && m.keys[3] == SDL_SCANCODE_RETURN);
+    assert(names(15) == "Mouse Left|J");
     memset(k, 0, sizeof(k));
     b[SDL_CONTROLLER_BUTTON_B] = 1;
     a[SDL_CONTROLLER_AXIS_LEFTX] = -32768;
@@ -61,7 +96,7 @@ int main() {
     assert(s.buttons == (CELL_PAD_CTRL_CROSS | CELL_PAD_CTRL_L2));
     assert(s.lx == 0 && s.ly == 255 && s.rx == 128 && s.l2 == 255);
     m.keyboard = false;
-    k[SDL_SCANCODE_E] = 1;
+    k[SDL_SCANCODE_J] = 1;
     assert(!(sample().buttons & CELL_PAD_CTRL_SQUARE));
 
     uint8_t memory[4096]{};
@@ -144,5 +179,6 @@ int main() {
         puts("SDL virtual controller -> window-thread adapter -> guest: connect, buttons, axes, disconnect, reconnect OK");
     }
     SDL_Quit();
-    puts("PC input: mapping, focus, axes, remap, PS3 big-endian ABI, pressure, release and rumble OK");
+    puts("PC input: defaults, dual and mouse bindings, evade modifier, reserved keys, focus, axes, remap, "
+         "PS3 big-endian ABI, pressure, release and rumble OK");
 }
