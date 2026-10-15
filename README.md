@@ -49,15 +49,19 @@ first level runs far too slowly to play.
 
 ## Requirements
 
-- Linux x86-64 with a CPU that supports AVX2/FMA. The translated SPU code is compiled with
-  `-march=x86-64-v3`; for older CPUs configure with `-DPORT_SPU_MARCH=x86-64-v2`.
-- A GPU with a Vulkan driver.
-- 32 GB of RAM to build: the translated PPU sources are large (about 26 GB peak with `-j6`).
+- Linux x86-64 and a GPU with a Vulkan driver.
 - clang, CMake, Ninja, 7-Zip, Vulkan headers, SDL2, FFmpeg and Python 3 with Tk.
 - Your own copy of the game: the disc ISO (version 1.00) and the PKG of the 1.12 patch.
 - An external SELF/NPDRM decrypter with a `--decrypt <file>` command line that reads the KLIC from
   standard input, and a C header with the public NPDRM constants `NP_OMAC_KEY_2` and `NP_KLIC_FREE`.
   Neither is distributed here.
+
+**Build notes**
+- The translated SPU code is compiled with `-march=x86-64-v3` (AVX2/FMA) by default. On a CPU without
+  AVX2, configure with `-DPORT_SPU_MARCH=x86-64-v2`.
+- The translated PPU sources are very large, so compiling them takes a lot of memory per job. Pick the
+  number of parallel jobs to fit your RAM (`BUILD_JOBS` for `scripts/build.sh`, 6 by default;
+  `-j` for `cmake --build`); fewer jobs use less memory but take longer.
 
 ## Building
 
@@ -107,8 +111,8 @@ scripts/lift_spu.sh      # SPU images and the WWS policy module -> spu/
 scripts/build.sh         # linux-vulkan preset by default (also linux-vulkan-debug, linux-null)
 ```
 
-Incremental builds afterwards: `cmake --build build/linux-vulkan -j6` (lower `-j` if you are short on
-RAM).
+Incremental builds afterwards: `cmake --build build/linux-vulkan -j<jobs>`, with a job count that
+fits your RAM.
 
 **Optional: position-independent SPU fragments.** Some jobs copy SPU code to local-store addresses
 chosen at run time. Without translated fragments the SPU interpreter runs that code, much more slowly.
