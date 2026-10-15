@@ -1,4 +1,19 @@
 #!/usr/bin/env python3
+"""Aggregate sampled thread stacks of a benchmark run into per-thread profiles.
+
+The run directory must contain ``stacks/*.txt`` (one raw ``eu-stack`` sample
+per file: ``TID <n>:`` lines followed by ``#<i> 0x<address>`` frames) and
+``maps.txt`` (a copy of the process's /proc/<pid>/maps). Addresses are
+symbolised offline with ``eu-addr2line`` (elfutils).
+
+For every thread prints its total samples, the share of busy samples (top
+frame not a wait/sleep/poll function), its root function and its most common
+stacks (the innermost --depth frames, innermost first, joined by " < ").
+--flat adds inclusive function counts over busy samples of all threads.
+
+Usage example:
+    python3 scripts/summarize_stacks.py scratch/bench-run --min-busy 0.2 --flat
+"""
 import argparse
 import bisect
 import collections
@@ -7,6 +22,7 @@ import subprocess
 from pathlib import Path
 
 FRAME = re.compile(r'^#\d+\s+0x([0-9a-f]+)')
+# Prefixes of top-of-stack functions that mean the thread is waiting, not busy.
 WAIT_HINTS = ('__futex', 'futex', 'pthread_cond', '__GI___nanosleep', 'nanosleep', 'clock_nanosleep',
               '__GI___clock_nanosleep', 'poll', '__poll', 'epoll', 'sched_yield', '__sched_yield', 'usleep',
               'sem_', 'WaitForSingleObject', 'Sleep', 'select', '__GI___ioctl', 'ioctl', '__GI___poll',
@@ -14,6 +30,12 @@ WAIT_HINTS = ('__futex', 'futex', 'pthread_cond', '__GI___nanosleep', 'nanosleep
 
 
 def parse(path):
+    """Read one eu-stack sample file.
+
+    Returns:
+        A dict mapping thread ID to its list of frame addresses, innermost
+        first.
+    """
     threads, tid = {}, None
     for line in path.read_text(errors='replace').splitlines():
         if line.startswith('TID '):
@@ -27,6 +49,11 @@ def parse(path):
 
 
 def load_maps(path):
+    """Read the file-backed mappings of a /proc/<pid>/maps copy.
+
+    Returns:
+        A list of (start, end, file offset, path) tuples sorted by start.
+    """
     maps = []
     for line in path.read_text().splitlines():
         parts = line.split(None, 5)
@@ -39,6 +66,20 @@ def load_maps(path):
 
 
 def symbolize(addresses, maps):
+    """Resolve absolute addresses to function names with eu-addr2line.
+
+    Each address is converted to an offset from its module's load base and
+    looked up in batches of 2000 per module.
+
+    Args:
+        addresses: iterable of absolute addresses.
+        maps: mappings returned by load_maps().
+
+    Returns:
+        A dict mapping each address to its demangled function name,
+        ``<module>+?`` when the module has no symbol for it, or ``??`` when
+        no mapping contains it.
+    """
     starts = [m[0] for m in maps]
     by_module = collections.defaultdict(list)
     names = {}
@@ -63,6 +104,11 @@ def symbolize(addresses, maps):
 
 
 def main():
+    """Parse arguments, aggregate all samples and print the per-thread report.
+
+    Threads are listed by sample count, skipping those whose busy share is
+    below --min-busy; each shows its --top most common stacks.
+    """
     parser = argparse.ArgumentParser(description='Aggregate raw eu-stack samples per thread, symbolized offline from maps.txt.')
     parser.add_argument('run', type=Path, help='benchmark output directory with stacks/ and maps.txt')
     parser.add_argument('--depth', type=int, default=8)

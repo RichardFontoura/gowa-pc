@@ -1,7 +1,26 @@
-/* Real pthread and SDL dummy device: rate, bounded queue, clean shutdown. */
+/// Live pacing test for the cellAudio mixer: real pthread and SDL dummy device.
+///
+/// Starts the real mixer thread of cellAudio.c for about two seconds, first
+/// without an audio device and then with SDL's "dummy" driver, and checks the
+/// block rate, that the device queue stays bounded and that the thread stops
+/// promptly (including a repeated stop). Uses wall-clock time, so the accepted
+/// rate ranges are wide.
+///
+/// AUDIO_IMPLEMENTATION is the quoted path of the cellAudio.c to test. Built and
+/// run by scripts/build_perf_candidate.py, roughly:
+///
+///     cc -std=gnu17 -O2 -pthread -I <ps3recomp>/include
+///        -DAUDIO_IMPLEMENTATION='"<ps3recomp>/libs/audio/cellAudio.c"'
+///        tests/test_audio_pacing_live.c -lSDL2 -o test_audio_pacing_live
+///     ./test_audio_pacing_live
+///
+/// The cc command is a single line, wrapped here for readability.
 #include AUDIO_IMPLEMENTATION
 #include <assert.h>
 
+/// Runtime globals and hooks that cellAudio.c links against. Guest memory,
+/// reservations, SPU coherency and event queues are not involved here, so they
+/// are no-ops (no notify queue is found and pushes are ignored).
 uint8_t* vm_base;
 uint32_t ppu_vm_size;
 int g_resv_store_active;
@@ -16,6 +35,11 @@ uint32_t sys_event_find_queue_by_key(uint64_t key) { (void)key; return 0; }
 int sys_event_queue_push_by_id(uint32_t q, uint64_t s, uint64_t a, uint64_t b, uint64_t c)
 { (void)q; (void)s; (void)a; (void)b; (void)c; return 0; }
 
+/// Runs the mixer thread for 100 polls of 20 ms, with the SDL device opened
+/// when device is set. Asserts the block rate (about 187.5 blocks/s without a
+/// device, a wider range for SDL's dummy driver), a peak queue of at most 1024
+/// samples, a stop that takes under 100 ms, and that a second stop and the
+/// backend shutdown are safe.
 static void run(int device)
 {
     if (device) assert(audio_backend_init() == 0);
@@ -42,6 +66,8 @@ static void run(int device)
     audio_backend_shutdown();
 }
 
+/// Selects SDL's dummy audio driver, sets up one running stereo port with eight
+/// blocks, and runs the no-device case followed by the SDL dummy device case.
 int main(void)
 {
     SDL_setenv("SDL_AUDIODRIVER", "dummy", 1);

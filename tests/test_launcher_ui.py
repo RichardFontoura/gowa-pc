@@ -1,3 +1,16 @@
+"""Tk interface tests for the launcher (``launcher/gowa_launcher.py``).
+
+``LauncherSmokeTest`` starts ``scripts/launcher.sh --exit-after 500`` under
+``xvfb-run`` and is skipped when ``xvfb-run`` is not installed.
+``LauncherPagesTest`` drives a real ``Launcher`` window and runs only with
+``GOWA_UI_TEST=1`` and a usable display and Tk. Configuration, ``game.ini``,
+backups and savedata are redirected to a temporary directory; the game is never
+started (the play test runs a sleeping Python process instead).
+
+Run from the repository root::
+
+    GOWA_UI_TEST=1 xvfb-run -a python -m unittest discover -s tests -p 'test_launcher*.py'
+"""
 import os
 from pathlib import Path
 import shutil
@@ -13,7 +26,9 @@ sys.path.insert(0, str(PORT / 'launcher'))
 
 @unittest.skipUnless(shutil.which('xvfb-run'), 'requires xvfb-run')
 class LauncherSmokeTest(unittest.TestCase):
+    """Starts the launcher script headless and checks that it exits cleanly."""
     def test_starts_under_xvfb_and_exits(self):
+        """The launcher opens under Xvfb, exits with code 0 after 500 ms and writes nothing to the config folder."""
         with tempfile.TemporaryDirectory() as folder:
             env = {**os.environ, 'GOWA_CONFIG_DIR': folder}
             result = subprocess.run(['xvfb-run', '-a', 'bash', str(PORT / 'scripts/launcher.sh'),
@@ -25,7 +40,12 @@ class LauncherSmokeTest(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get('GOWA_UI_TEST') == '1', 'requires a display and Tk')
 class LauncherPagesTest(unittest.TestCase):
+    """Page-level behavior of a real ``Launcher`` window."""
     def setUp(self):
+        """Redirect the launcher's config, ``game.ini``, backup and savedata paths to a temporary folder.
+
+        Seeds ``game.ini`` with a few values and opens a ``Launcher`` on a new Tk root.
+        """
         import tkinter as tk
         import gowa_launcher as ui
         import settings
@@ -48,6 +68,7 @@ class LauncherPagesTest(unittest.TestCase):
         self.app = ui.Launcher(self.root)
 
     def tearDown(self):
+        """Kill any child process, destroy the window, undo the patches and remove the temporary folder."""
         if self.app.process and self.app.process.poll() is None:
             self.app.process.kill()
             self.app.process.wait()
@@ -57,6 +78,12 @@ class LauncherPagesTest(unittest.TestCase):
         self.folder.cleanup()
 
     def test_graphics_write_game_ini_and_reload(self):
+        """Graphics options load from ``game.ini``, save back to it and reload after external edits.
+
+        Existing lines are kept, the overlay item list is written in order, launcher
+        options go to ``settings.json``, and an invalid scale shows an error and
+        refuses to save.
+        """
         app = self.app
         self.assertTrue(app.ini_vars['show_fps'].get())
         self.assertEqual(app.size_box.get(), '2560 × 1440')
@@ -82,6 +109,11 @@ class LauncherPagesTest(unittest.TestCase):
             error.assert_called_once()
 
     def test_diagnostics_reset_and_save(self):
+        """Diagnostics save to ``settings.json`` and the parallel-cores selector follows the field.
+
+        Choosing a preset fills the field, a custom value selects "custom", and reset
+        restores the default diagnostics.
+        """
         app = self.app
         app.diag_vars['kern_threads'].set('3')
         app.diag_vars['frame_csv'].set(True)
@@ -98,6 +130,12 @@ class LauncherPagesTest(unittest.TestCase):
         self.assertEqual(app.collect()['diagnostics'], self.settings.DIAGNOSTICS)
 
     def test_controls_two_columns_capture_and_duplicates(self):
+        """The Controls page shows two bindings per button, captures keys and mouse clicks and warns on duplicates.
+
+        Clicking an entry starts capture; the next key or mouse click becomes the
+        binding, reserved keys are ignored and BackSpace clears it. Pairs are saved
+        joined by a pipe and reset restores the defaults.
+        """
         app = self.app
         app.show('Controles')
         self.root.update()
@@ -136,6 +174,7 @@ class LauncherPagesTest(unittest.TestCase):
         self.assertEqual(second.get(), 'K')
 
     def find_entry(self, var):
+        """Return the widget path of the Controls page entry bound to ``var``; fail if none exists."""
         stack = [self.app.pages['Controles']]
         while stack:
             widget = stack.pop()
@@ -145,6 +184,10 @@ class LauncherPagesTest(unittest.TestCase):
         raise AssertionError('entry not found')
 
     def test_log_cap_copy_clear_and_status_markers(self):
+        """The log view is capped at ``LOG_LIMIT`` lines and updates the status only on complete lines.
+
+        Also checks copying the log to the clipboard and clearing it.
+        """
         app = self.app
         app.follow(''.join(f'linha {i}\n' for i in range(self.ui.LOG_LIMIT + 50)))
         self.assertLessEqual(int(app.log.index('end-1c').split('.')[0]), self.ui.LOG_LIMIT + 1)
@@ -158,6 +201,11 @@ class LauncherPagesTest(unittest.TestCase):
         self.assertEqual(app.log.get('1.0', 'end-1c'), '')
 
     def test_play_backs_up_saves_and_restore_is_guarded(self):
+        """Play backs up the saves first; restore is refused while the game runs and asks for confirmation after.
+
+        Declining keeps the current saves; confirming restores the backup and adds a
+        safety backup of the replaced saves.
+        """
         app, ui = self.app, self.ui
         saves = self.dir / 'savedata' / 'BCUS98232-SYSDATA'
         saves.mkdir(parents=True)

@@ -4,6 +4,19 @@
 With --probe, instrument its Vulkan backend before compiling. The shared
 source/build are only read for compiler/linker recipes; inputs come from the
 immutable snapshot. No game is launched.
+
+Usage example:
+    ../.venv/bin/python scripts/relink_perf_snapshot.py scratch/perf-ab
+        candidate --name GowaFpsFix --source libs/video/cellGcmSys.c --probe
+
+SNAPSHOT is a directory made by build_perf_candidate.py. Each --source path is
+relative to the ps3recomp checkout and is compiled from the variant's copy,
+after which the object replaces its counterpart in the variant's
+libps3recomp_runtime.a (the archive is updated in place). --port-main compiles
+the given copy of main.cpp instead of the frozen main object. The executable
+is written to SNAPSHOT/VARIANT/NAME and its path printed; with --probe and the
+GOWA_FRAME_CSV variable set, it writes one CSV row per present (see
+summarize_fps.py).
 """
 import argparse
 import json
@@ -16,6 +29,18 @@ from build_perf_candidate import BUILD, SDK, PORT, WORKSPACE, run
 
 
 def instrument(tree):
+    """Add the frame-timing probe to a snapshot tree's Vulkan backend.
+
+    Copies pc/perf_probe.h next to libs/video/rsx_vulkan_backend.c and, unless
+    the backend already includes it, inserts the probe calls at fixed text
+    anchors (backend start, submit-and-wait, fence wait and present).
+
+    Args:
+        tree: Path of the variant's ps3recomp copy.
+
+    Raises:
+        ValueError: if an anchor does not occur exactly once in the backend.
+    """
     source = tree / 'libs/video/rsx_vulkan_backend.c'
     text = source.read_text()
     probe = tree / 'libs/video/perf_probe.h'
@@ -42,6 +67,13 @@ def instrument(tree):
 
 
 def main():
+    """Parse arguments, recompile the requested sources and relink the variant.
+
+    The link command is read from the shared build's Ninja recipe (without
+    running it) and rewritten so every object and archive comes from the
+    snapshot's frozen link-inputs/, except the variant's runtime archive and,
+    with --port-main, the freshly compiled main object.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('snapshot', type=Path)
     parser.add_argument('variant', choices=['baseline', 'candidate'])

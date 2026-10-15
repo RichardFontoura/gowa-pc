@@ -1,17 +1,42 @@
 #!/usr/bin/env python3
+"""Summarise a runtime timeline capture per thread and per presented frame.
+
+The capture is the binary file the runtime writes when started with
+``PS3_TIMELINE=<file>`` and ``PS3_TIMELINE_AT=<seconds>`` (capture start;
+``PS3_TIMELINE_SECONDS`` sets its length, default 3). It is an array of
+little-endian records (see RECORD): time in ns since capture start, host
+thread ID, event type (see NAMES) and one argument.
+
+Prints the event and present counts, the gaps between presents, each
+thread's busy share by activity between the first and last present
+(policy-module intervals appear as ``w<workload id>``, with ``*`` when the
+run found work), and an ASCII strip of the first --frames frames, one row per thread.
+
+Usage example:
+    PS3_TIMELINE=scratch/tl.bin PS3_TIMELINE_AT=60 scripts/run.sh
+    python3 scripts/summarize_timeline.py scratch/tl.bin --frames 5
+"""
 import argparse
 import collections
 import struct
 from pathlib import Path
 
+# Record layout: u64 t_ns, u32 tid, u16 type, u16 pad, u32 arg, u32 pad.
 RECORD = struct.Struct('<QIHHII')
+# Event types; a trailing "+" / "-" marks the begin / end of an interval.
 NAMES = {1: 'pm+', 2: 'pm-', 3: 'drain+', 4: 'drain-', 5: 'present', 6: 'usleep+', 7: 'usleep-',
          8: 'task+', 9: 'task-', 10: 'wait+', 11: 'wait-', 12: 'gpu+', 13: 'gpu-', 14: 'flip', 15: 'report',
          16: 'vdec-decode', 17: 'vdec-picture'}
+# Begin event type -> matching end event type.
 PAIRS = {1: 2, 3: 4, 6: 7, 8: 9, 10: 11, 12: 13}
 
 
 def load(path):
+    """Read all records of a capture file, sorted by time.
+
+    Returns:
+        A list of (t_ns, tid, type, pad, arg, pad) tuples.
+    """
     data = path.read_bytes()
     events = [RECORD.unpack_from(data, i) for i in range(0, len(data) - RECORD.size + 1, RECORD.size)]
     events.sort(key=lambda e: e[0])
@@ -19,6 +44,15 @@ def load(path):
 
 
 def intervals(events):
+    """Pair begin and end events of the same thread into intervals.
+
+    An end event without an open begin is ignored, and a begin that repeats
+    before its end replaces the earlier one.
+
+    Returns:
+        A dict mapping thread ID to a list of
+        (start ns, end ns, begin type, begin arg, end arg) tuples.
+    """
     open_ = {}
     spans = collections.defaultdict(list)
     for t, tid, kind, _, arg, _ in events:
@@ -33,6 +67,11 @@ def intervals(events):
 
 
 def main():
+    """Parse arguments and print the summary and ASCII strips of a capture.
+
+    In the strips each character covers --ms-per-char milliseconds; the
+    legend printed before them explains the symbols.
+    """
     parser = argparse.ArgumentParser(description='Summarize a PS3_TIMELINE capture: per-thread activity per presented frame and an ASCII strip.')
     parser.add_argument('trace', type=Path)
     parser.add_argument('--frames', type=int, default=3, help='frames to draw as ASCII strips')

@@ -19,6 +19,11 @@ PORT = Path(__file__).resolve().parents[1]
 
 
 def allow_parent_debuggers():
+    """Allow the parent process and its descendants to ptrace this process.
+
+    Runs in the child before exec so a stack sampler started by the benchmark can
+    attach under the Yama ptrace restrictions. Raises ``OSError`` on failure.
+    """
     # Yama permits this game's parent, but normally rejects a sibling gdb
     # spawned by that parent. Allow this parent AND its descendants only.
     # Changes only the child being exec'd; no global ptrace policy changes.
@@ -28,6 +33,24 @@ def allow_parent_debuggers():
 
 
 def main():
+    """Run one bounded benchmark and write its artifacts to a new ``--out`` directory.
+
+    Sets up private hdd0/hdd1 and savedata folders (copying saves from
+    ``scratch/saves``) with the patch from ``game/update``, then starts ``--exe``
+    on ``game/EBOOT.ELF``. Inherited runtime variables (``SPU_*``, ``GCM_*``,
+    ``RSX_*`` and similar) are dropped and replaced by a fixed configuration plus
+    ``--env`` overrides, recorded in ``run.json``. For ``--seconds`` it:
+
+    - fails if the game exits, the patch is not mounted or no window appears;
+    - records per-thread CPU ticks once per second in ``cpu.jsonl``;
+    - optionally samples all thread stacks with ``eu-stack`` at ``--profile-at``;
+    - plays the ``--steps`` timeline (screenshots and key presses).
+
+    Frame times go to ``frames.csv``. Must run under an X server such as
+    ``xvfb-run``, for example::
+
+        xvfb-run -a python tests/benchmark_pc_fps.py --exe build/linux-vulkan/GowAscensionRecomp --out scratch/bench/run1
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--exe', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)

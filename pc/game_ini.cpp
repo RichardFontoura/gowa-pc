@@ -11,18 +11,32 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/// Parsing, rendering and atomic saving of game.ini (see game_ini.h).
+/// The name tables below define the on-disk spelling of each enum value; their
+/// order must match the corresponding enum / OverlayItem bit positions.
+
 namespace {
+/// Overlay item names; index N is OverlayItem bit N.
 constexpr const char* item_names[] = {"fps", "frametime", "graph", "present", "spu", "shaders", "video"};
+/// Serialized gowa::Corner values, indexed by enumerator.
 constexpr const char* corner_names[] = {"tl", "tr", "bl", "br"};
+/// Serialized gowa::DisplayMode values, indexed by enumerator.
 constexpr const char* mode_names[] = {"windowed", "borderless", "fullscreen"};
+/// Every key the port reads or writes. Also the order in which missing,
+/// non-default keys are appended by render_game_ini().
 constexpr const char* known_keys[] = {"show_fps", "overlay_corner", "overlay_scale",
     "overlay_opacity", "overlay_items", "display_mode", "vsync", "window_size"};
 
+/// Returns @p s without leading/trailing spaces, tabs, CR and LF.
 std::string trim(const std::string& s) {
     const auto a = s.find_first_not_of(" \t\r\n"), b = s.find_last_not_of(" \t\r\n");
     return a == std::string::npos ? "" : s.substr(a, b - a + 1);
 }
 
+/// Splits a `key = value` line at the first `=`, trimming both sides.
+/// Returns false when there is no `=` or the key is empty or contains anything
+/// other than letters, digits and `_` (so comment lines are never treated as
+/// settings). @p key and @p value may be modified even on failure.
 bool split_line(const std::string& line, std::string& key, std::string& value) {
     const auto eq = line.find('=');
     if (eq == std::string::npos) return false;
@@ -34,6 +48,9 @@ bool split_line(const std::string& line, std::string& key, std::string& value) {
     return true;
 }
 
+/// Parses a plain non-negative decimal (digits only, at most 6 characters) and
+/// stores it in @p out if it lies within [@p low, @p high]. Returns success;
+/// @p out is untouched on failure.
 bool parse_int(const std::string& text, int low, int high, int& out) {
     if (text.empty() || text.size() > 6) return false;
     for (char c : text)
@@ -44,6 +61,7 @@ bool parse_int(const std::string& text, int low, int high, int& out) {
     return true;
 }
 
+/// Returns the index of @p text in @p names (exact, case-sensitive match), or -1.
 template <size_t N>
 int find_name(const char* const (&names)[N], const std::string& text) {
     for (size_t i = 0; i < N; ++i)
@@ -51,12 +69,19 @@ int find_name(const char* const (&names)[N], const std::string& text) {
     return -1;
 }
 
+/// Parses `<width>x<height>` with each side in 100..99999. Returns success;
+/// on failure @p w may already have been written.
 bool parse_size(const std::string& text, int& w, int& h) {
     const auto x = text.find('x');
     if (x == std::string::npos) return false;
     return parse_int(text.substr(0, x), 100, 99999, w) && parse_int(text.substr(x + 1), 100, 99999, h);
 }
 
+/// Applies one parsed `key=value` pair to @p s. Valid values overwrite the
+/// field; an invalid value for a known key is reported on stderr and ignored;
+/// unknown keys are ignored silently (they belong to the launcher or to
+/// another version). `overlay_items` always succeeds and keeps unknown names
+/// in overlay_items_extra.
 void apply(gowa::GameSettings& s, const std::string& key, const std::string& value) {
     int n = 0;
     if (key == "show_fps" && (value == "0" || value == "1")) s.show_fps = value == "1";
@@ -80,6 +105,7 @@ void apply(gowa::GameSettings& s, const std::string& key, const std::string& val
         fprintf(stderr, "[game.ini] ignored %s=%s\n", key.c_str(), value.c_str());
 }
 
+/// Serializes every known key of @p s to its on-disk text, keyed by name.
 std::map<std::string, std::string> encode(const gowa::GameSettings& s) {
     std::map<std::string, std::string> v;
     v["show_fps"] = s.show_fps ? "1" : "0";
@@ -94,6 +120,9 @@ std::map<std::string, std::string> encode(const gowa::GameSettings& s) {
     return v;
 }
 
+/// Recursive `mkdir -p` with mode 0755. Returns true if @p dir is empty or
+/// ends up existing as a directory; false if creation fails or a non-directory
+/// already occupies the path.
 bool make_dirs(const std::string& dir) {
     if (dir.empty()) return true;
     struct stat st{};
@@ -104,6 +133,7 @@ bool make_dirs(const std::string& dir) {
 }
 }
 
+/// Comma-separated overlay item names to OverlayItem bits; see game_ini.h.
 unsigned gowa::parse_overlay_items(const std::string& text, std::string* extra) {
     unsigned items = 0;
     if (extra) extra->clear();
@@ -118,6 +148,7 @@ unsigned gowa::parse_overlay_items(const std::string& text, std::string* extra) 
     return items;
 }
 
+/// OverlayItem bits plus unknown extras back to a comma-separated list; see game_ini.h.
 std::string gowa::format_overlay_items(unsigned items, const std::string& extra) {
     std::string out;
     for (size_t i = 0; i < std::size(item_names); ++i) {
@@ -129,6 +160,7 @@ std::string gowa::format_overlay_items(unsigned items, const std::string& extra)
     return out;
 }
 
+/// Resolves the game.ini location from the environment; see game_ini.h.
 std::string gowa::game_ini_path() {
     if (const char* p = getenv("GOWA_GAME_INI"); p && *p) return p;
     if (const char* d = getenv("GOWA_CONFIG_DIR"); d && *d) return std::string(d) + "/game.ini";
@@ -137,6 +169,7 @@ std::string gowa::game_ini_path() {
     return std::string(home && *home ? home : ".") + "/.config/gowa-pc/game.ini";
 }
 
+/// Reads @p path line by line, keeping raw lines and applying known keys; see game_ini.h.
 gowa::GameIni gowa::load_game_ini(const std::string& path) {
     GameIni ini;
     ini.path = path;
@@ -152,6 +185,7 @@ gowa::GameIni gowa::load_game_ini(const std::string& path) {
     return ini;
 }
 
+/// Rewrites known keys in place and appends missing non-default ones; see game_ini.h.
 std::string gowa::render_game_ini(const std::vector<std::string>& lines, const GameSettings& settings) {
     const auto values = encode(settings);
     const auto defaults = encode(GameSettings{});
@@ -169,6 +203,7 @@ std::string gowa::render_game_ini(const std::vector<std::string>& lines, const G
     return out;
 }
 
+/// Atomic write-temp-fsync-rename save; see game_ini.h.
 bool gowa::save_game_ini(GameIni& ini) {
     const std::string text = render_game_ini(ini.lines, ini.settings);
     const auto slash = ini.path.find_last_of('/');

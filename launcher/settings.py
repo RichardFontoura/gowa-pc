@@ -1,3 +1,13 @@
+"""Launcher settings: ``settings.json`` schema, validation and game environment.
+
+``settings.json`` holds the launcher-only options (controls, pad style,
+rumble, dead zone, external tools and diagnostic switches). Display and
+overlay options live in ``game.ini`` instead (see :mod:`game_ini`). This
+module loads, migrates, validates and atomically saves the JSON file, and
+turns the validated settings into the environment variables and command
+line used to start the game through ``scripts/run.sh``.
+"""
+
 import copy
 import ctypes
 import ctypes.util
@@ -10,18 +20,26 @@ import tempfile
 
 import game_ini
 
+# Root of the port repository (the parent of launcher/).
 PORT = Path(__file__).resolve().parent.parent
 CONFIG_ROOT = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config')
+# GOWA_CONFIG_DIR overrides the whole configuration directory; the game honors it too.
 CONFIG_DIR = Path(os.environ.get('GOWA_CONFIG_DIR') or CONFIG_ROOT / 'gowa-pc')
 CONFIG_FILE = CONFIG_DIR / 'settings.json'
 GAME_INI = CONFIG_DIR / 'game.ini'
 FRAME_CSV = CONFIG_DIR / 'frames.csv'
 BACKUP_DIR = CONFIG_DIR / 'savedata_backups'
 SHADER_CACHE_DIR = Path(os.environ.get('XDG_CACHE_HOME') or Path.home() / '.cache') / 'gowa-pc'
+# Files inside SHADER_CACHE_DIR removed by clear_shader_cache(), besides spirv/*.spv.
 SHADER_CACHE_FILES = ('pipelines.vkcache', 'pipelines.manifest')
+# The game's save data inside the port's virtual dev_hdd0 tree.
 SAVEDATA_DIR = PORT / 'gamedata/dev_hdd0/home/00000001/savedata'
+# Settings file of an older config directory name, read when the current one is missing.
 LEGACY_CONFIG_FILE = None if os.environ.get('GOWA_CONFIG_DIR') else CONFIG_ROOT / 'gowa-recomp' / 'settings.json'
+# Current settings.json schema version; version 1 files are upgraded by migrate().
 VERSION = 2
+# One row per game button: (id, label shown in the UI, default keys joined by '|',
+# default SDL game controller button or None when the pad mapping is fixed).
 CONTROLS = [
     ('cross', 'Cross / X', 'Space|K', 'a'), ('circle', 'Circle / O', 'F|L', 'b'),
     ('square', 'Square / □', 'Mouse Left|J', 'x'), ('triangle', 'Triangle / △', 'Mouse Right|I', 'y'),
@@ -34,15 +52,22 @@ CONTROLS = [
     ('evade_mod', 'Esquiva (WASD vira analógico direito)', 'Left Alt', None),
 ]
 KEY_DEFAULTS = {name: key for name, _, key, _ in CONTROLS}
+# Default keyboard map of settings version 1, used by migrate() to detect untouched maps.
 LEGACY_KEY_DEFAULTS = {
     'cross': 'Space', 'circle': 'Left Shift', 'square': 'E', 'triangle': 'Q', 'l1': '1', 'r1': '3',
     'l2': 'R', 'r2': 'F', 'l3': 'Z', 'r3': 'C', 'start': 'Return', 'select': 'Tab',
     'up': 'I', 'down': 'K', 'left': 'J', 'right': 'L',
 }
+# Mouse buttons accepted as bindings; they are not SDL key names.
 MOUSE_NAMES = ('Mouse Left', 'Mouse Right', 'Mouse Middle', 'Mouse X1', 'Mouse X2')
+# Keys the game itself uses (Insert opens the PC menu, F10 toggles the FPS counter).
 RESERVED_KEYS = ('Insert', 'F10')
+# Keys hard-wired to the analog sticks (WASD left stick, arrows right stick).
 STICK_KEYS = ('W', 'A', 'S', 'D', 'Up', 'Down', 'Left', 'Right')
+# Maximum number of keys/mouse buttons bound to one game button.
 MAX_BINDINGS = 2
+# Display names of SDL game controller buttons, per pad style. The keys of the
+# 'playstation' table are also the set of valid pad binding values.
 PAD_NAMES = {
     'playstation': {'a': 'Cross', 'b': 'Circle', 'x': 'Square', 'y': 'Triangle',
                    'leftshoulder': 'L1', 'rightshoulder': 'R1', 'leftstick': 'L3', 'rightstick': 'R3',
@@ -52,7 +77,10 @@ PAD_NAMES = {
              'leftstick': 'LS', 'rightstick': 'RS', 'start': 'Menu', 'back': 'View',
              'dpup': 'Direcional ↑', 'dpdown': 'Direcional ↓', 'dpleft': 'Direcional ←', 'dpright': 'Direcional →'},
 }
+# Named values for diagnostics.kern_parallel (SPURS workloads allowed to run in parallel).
 PARALLEL_PRESETS = {'Padrão': '7,13,14,15,16', 'Seguro': ''}
+# Diagnostic switches and their defaults; the defaults match scripts/run.sh, so a value
+# only becomes an environment variable when it differs (see diagnostic_environment()).
 DIAGNOSTICS = {'frame_csv': False, 'texture_compute': True, 'raw_textures': True,
                'tex_hash_full': False, 'vdec_perf': False, 'kern_threads': 6,
                'kern_parallel': PARALLEL_PRESETS['Padrão'], 'flip_min_ms': 250,
@@ -60,10 +88,23 @@ DIAGNOSTICS = {'frame_csv': False, 'texture_compute': True, 'raw_textures': True
 DEFAULTS = {'version': VERSION, 'pad_style': 'playstation', 'keyboard': True, 'rumble': True,
             'stick_deadzone': 7849, 'mangohud': False, 'gamemode': False,
             'diagnostics': copy.deepcopy(DIAGNOSTICS), 'controls': {'key': {}, 'pad': {}}}
+# Comma-separated list of non-negative integers, or the empty string.
 PARALLEL = re.compile(r'^([0-9]+(,[0-9]+)*)?$')
 
 
 def migrate(data):
+    """Upgrade a version 1 settings dict to the current schema.
+
+    Data of any other version is returned unchanged (as a deep copy). For
+    version 1: the version is bumped, the obsolete top-level ``display_mode``
+    is dropped (it now lives in ``game.ini``, see :func:`load`), a top-level
+    ``flip_min_ms`` is moved into ``diagnostics`` unless already set there,
+    and a keyboard map that still equals the old defaults (or is empty) is
+    replaced with the current ``KEY_DEFAULTS``.
+
+    Returns:
+        A new dict; ``data`` is not modified.
+    """
     data = copy.deepcopy(data)
     if data.get('version') != 1:
         return data
@@ -80,6 +121,10 @@ def migrate(data):
 
 
 def canonical_key(value):
+    """Return the canonical spelling of a mouse binding name, matched case-insensitively.
+
+    Anything that is not one of ``MOUSE_NAMES`` is returned unchanged.
+    """
     for name in MOUSE_NAMES:
         if value.casefold() == name.casefold():
             return name
@@ -87,10 +132,29 @@ def canonical_key(value):
 
 
 def split_bindings(value):
+    """Split a ``'Key1|Key2'`` binding into stripped, canonicalized parts (empty parts kept)."""
     return [canonical_key(part.strip()) for part in value.split('|')]
 
 
 def normalize_binding(name, value):
+    """Validate one keyboard binding and return it in normalized form.
+
+    The binding must be a string with one or two non-empty parts separated
+    by ``|``, without ``,``, ``=`` or newlines (they would break the
+    ``GOWA_KEY_MAP`` encoding), without the same key twice and without a
+    key from ``RESERVED_KEYS``. Whether each part is a real SDL key name is
+    checked separately by :func:`validate_keys`.
+
+    Args:
+        name: Game button id, used in error messages.
+        value: Binding as entered, e.g. ``'space | mouse left'``.
+
+    Returns:
+        The parts joined with ``|`` after stripping and mouse-name canonicalization.
+
+    Raises:
+        ValueError: If any rule above is violated.
+    """
     if not isinstance(value, str) or any(c in value for c in ',=\n\r'):
         raise ValueError(f'Tecla inválida em {name}: {value!r}')
     parts = split_bindings(value)
@@ -105,6 +169,24 @@ def normalize_binding(name, value):
 
 
 def validate(data):
+    """Check a settings dict and return a complete, normalized copy.
+
+    The input is migrated (:func:`migrate`) and laid over ``DEFAULTS`` (a
+    shallow merge: a ``diagnostics`` or ``controls`` dict replaces the
+    default one, then missing diagnostic keys are filled in). Types and
+    ranges of every option are checked, ``kern_parallel`` has its spaces
+    removed and must list workload numbers 0..31, keyboard bindings are
+    normalized with :func:`normalize_binding`, and pad bindings must be SDL
+    game controller button names (keys of ``PAD_NAMES['playstation']``).
+    Only game buttons with a pad default in ``CONTROLS`` may have a pad
+    binding. Unknown top-level keys are kept as-is.
+
+    Returns:
+        A new validated dict; ``data`` is not modified.
+
+    Raises:
+        ValueError: With a user-facing (Portuguese) message for the first problem found.
+    """
     if not isinstance(data, dict):
         raise ValueError('A configuração deve ser um objeto JSON.')
     data = migrate(data)
@@ -157,7 +239,18 @@ def validate(data):
 
 
 def validate_keys(data):
-    lib = ctypes.CDLL(ctypes.util.find_library('SDL2') or 'libSDL2-2.0.so.0')
+    """Check that every keyboard binding names a key SDL recognizes.
+
+    Loads the SDL2 shared library through ``ctypes`` and asks
+    ``SDL_GetScancodeFromName`` for each bound key; a result of 0 (unknown
+    scancode) is an error. Mouse button names are accepted without asking
+    SDL. ``data`` must already be validated by :func:`validate`.
+
+    Raises:
+        ValueError: For the first unknown key name.
+        OSError: If the SDL2 library cannot be loaded.
+    """
+    lib =ctypes.CDLL(ctypes.util.find_library('SDL2') or 'libSDL2-2.0.so.0')
     lib.SDL_GetScancodeFromName.argtypes = [ctypes.c_char_p]
     lib.SDL_GetScancodeFromName.restype = ctypes.c_int
     for name, value in data['controls']['key'].items():
@@ -167,6 +260,15 @@ def validate_keys(data):
 
 
 def duplicate_bindings(keys):
+    """Find keys bound to more than one game button.
+
+    Args:
+        keys: Mapping of game button id to binding string (``'A|B'``).
+
+    Returns:
+        ``{key: [button ids]}`` for every key (compared case-insensitively)
+        used by two or more buttons, using the spelling of its first occurrence.
+    """
     owners = {}
     for name, value in keys.items():
         for part in split_bindings(value):
@@ -176,12 +278,37 @@ def duplicate_bindings(keys):
 
 
 def stick_conflicts(keys):
+    """Find bindings that use a key already wired to an analog stick.
+
+    Returns:
+        ``{button id: key}`` for each binding part found in ``STICK_KEYS``;
+        if a button has two such keys only the last one is reported.
+    """
     sticks = {k.casefold() for k in STICK_KEYS}
     return {name: part for name, value in keys.items() for part in split_bindings(value)
             if part.casefold() in sticks}
 
 
 def load(path=CONFIG_FILE, ini_path=None):
+    """Load and validate ``settings.json``.
+
+    When the default file is requested but missing, the legacy settings file
+    is read instead if it exists. A missing file yields a copy of
+    ``DEFAULTS``. A version 1 file that selected ``borderless`` display mode
+    has that choice carried over into ``game.ini`` via
+    :func:`seed_display_mode` (the file on disk is not rewritten here).
+
+    Args:
+        path: Settings file to read.
+        ini_path: ``game.ini`` that receives a migrated display mode; defaults to ``GAME_INI``.
+
+    Returns:
+        The validated settings dict.
+
+    Raises:
+        ValueError: If the JSON is malformed or fails :func:`validate`.
+        OSError: If a file cannot be read or ``game.ini`` cannot be written.
+    """
     path = Path(path)
     if path == CONFIG_FILE and not path.exists() and LEGACY_CONFIG_FILE and LEGACY_CONFIG_FILE.exists():
         path = LEGACY_CONFIG_FILE
@@ -196,6 +323,12 @@ def load(path=CONFIG_FILE, ini_path=None):
 
 
 def seed_display_mode(ini_path, mode):
+    """Write ``display_mode=mode`` to ``game.ini`` unless the file already sets it.
+
+    Any existing ``display_mode`` line, even an invalid one, counts as a user
+    choice and leaves the file untouched; otherwise the other options are
+    preserved and the file is rewritten with :func:`game_ini.write`.
+    """
     ini_path = Path(ini_path)
     text = ini_path.read_text(encoding='utf-8', errors='replace') if ini_path.exists() else ''
     if any((m := game_ini.LINE.match(line)) and m.group(1) == 'display_mode' for line in text.splitlines()):
@@ -204,6 +337,17 @@ def seed_display_mode(ini_path, mode):
 
 
 def save(data, path=CONFIG_FILE):
+    """Validate ``data`` and write it to ``path`` as JSON atomically.
+
+    Runs :func:`validate` and :func:`validate_keys`, creates the parent
+    directory, writes indented UTF-8 JSON to a temporary ``.settings-*``
+    file in the same directory, fsyncs it and moves it over ``path`` with
+    ``os.replace``. The temporary file is removed if anything fails.
+
+    Raises:
+        ValueError: If the settings are invalid; nothing is written.
+        OSError: If SDL2 cannot be loaded or the file cannot be written.
+    """
     data = validate(data)
     validate_keys(data)
     path = Path(path)
@@ -224,6 +368,23 @@ def save(data, path=CONFIG_FILE):
 
 
 def diagnostic_environment(diagnostics, frame_csv=None):
+    """Translate the diagnostic switches into environment variables.
+
+    Only values that differ from the runtime's defaults produce a variable:
+    ``frame_csv`` sets ``RSX_FRAME_CSV`` to the CSV path; disabled
+    ``texture_compute``, ``raw_textures``, ``shader_cache``, ``async_shaders``
+    or ``shader_warmup`` set their variable to ``0``; enabled
+    ``tex_hash_full`` or ``vdec_perf`` set theirs to ``1``; and
+    ``kern_threads``, ``kern_parallel`` and ``flip_min_ms`` are exported
+    only when they differ from ``DIAGNOSTICS``.
+
+    Args:
+        diagnostics: The validated ``diagnostics`` dict.
+        frame_csv: Path for the frame-time CSV; defaults to ``FRAME_CSV``.
+
+    Returns:
+        A dict of variable name to string value.
+    """
     env = {}
     if diagnostics['frame_csv']:
         env['RSX_FRAME_CSV'] = str(frame_csv or FRAME_CSV)
@@ -243,7 +404,19 @@ def diagnostic_environment(diagnostics, frame_csv=None):
 
 
 def clear_shader_cache(path=None):
-    path = Path(path or SHADER_CACHE_DIR)
+    """Delete the game's on-disk shader cache.
+
+    Removes the pipeline cache files listed in ``SHADER_CACHE_FILES`` and
+    every ``spirv/*.spv`` under ``path`` (default ``SHADER_CACHE_DIR``).
+    Files that are already gone are skipped; directories are left in place.
+
+    Returns:
+        The number of files actually removed.
+
+    Raises:
+        OSError: If a file exists but cannot be removed.
+    """
+    path =Path(path or SHADER_CACHE_DIR)
     victims = [path / name for name in SHADER_CACHE_FILES] + sorted((path / 'spirv').glob('*.spv'))
     removed = 0
     for victim in victims:
@@ -256,6 +429,30 @@ def clear_shader_cache(path=None):
 
 
 def game_environment(data, inherited=None, ini=None, ini_path=None):
+    """Build the full environment for starting the game.
+
+    Starts from ``inherited`` (default: the launcher's own ``os.environ``)
+    and sets the control maps (``GOWA_KEY_MAP``/``GOWA_PAD_MAP`` as
+    ``id=binding`` pairs joined by commas), keyboard, rumble and dead zone
+    switches, the ``game.ini`` path, the Vulkan window flags (fullscreen
+    whenever ``display_mode`` is not ``windowed``) and the window title.
+    Diagnostic variables from :func:`diagnostic_environment` are added with
+    ``setdefault``, so a value already present in the inherited environment
+    wins; the frame CSV is placed next to ``game.ini``.
+
+    Args:
+        data: Settings dict; validated with :func:`validate` and :func:`validate_keys`.
+        inherited: Base environment mapping; it is copied, not modified.
+        ini: ``game.ini`` options to use instead of reading ``ini_path``; validated.
+        ini_path: ``game.ini`` location; defaults to ``GAME_INI``.
+
+    Returns:
+        A new environment dict.
+
+    Raises:
+        ValueError: If the settings or the ``game.ini`` options are invalid.
+        OSError: If SDL2 cannot be loaded for key validation.
+    """
     data = validate(data)
     validate_keys(data)
     ini_path = Path(ini_path or GAME_INI)
@@ -276,10 +473,21 @@ def game_environment(data, inherited=None, ini=None, ini_path=None):
 
 
 def tool_available(name, which=shutil.which):
+    """Return ``True`` if the executable ``name`` is found on ``PATH`` (``which`` is injectable for tests)."""
     return bool(which(name))
 
 
 def game_command(data=None, which=shutil.which):
+    """Return the argv that starts the game.
+
+    The base command is ``bash scripts/run.sh``. When enabled in ``data`` and
+    installed, it is wrapped by ``mangohud`` and then by ``gamemoderun``
+    (so ``gamemoderun`` is outermost). Missing tools are skipped silently.
+
+    Args:
+        data: Settings dict (only ``mangohud`` and ``gamemode`` are read); ``None`` means no wrappers.
+        which: ``shutil.which``-compatible lookup, injectable for tests.
+    """
     command = ['bash', str(PORT / 'scripts/run.sh')]
     if data and data.get('mangohud') and tool_available('mangohud', which):
         command = ['mangohud'] + command

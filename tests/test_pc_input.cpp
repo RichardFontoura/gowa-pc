@@ -1,3 +1,25 @@
+/// Unit test for the PC input mapping (pc/input.cpp) and the guest pad ABI.
+///
+/// Part 1 drives gowa::InputMapping directly with synthetic keyboard, mouse and
+/// controller state: default bindings, two keys per button, mouse buttons, the
+/// evade modifier, opposite directions, focus loss, remapping through the
+/// key/pad map strings and the keyboard toggle. Part 2 feeds a sample through
+/// the real cellPad implementation (ps3recomp libs/input/cellPad.c) into a small
+/// guest memory buffer and checks the big-endian CellPadData layout, pressure
+/// values, release, connection info and rumble forwarding. No game assets or
+/// physical devices are used.
+///
+/// With GOWA_DEVICE_TEST set, part 3 also opens an SDL window and a virtual SDL
+/// game controller and checks the full path from SDL events through the window
+/// thread adapter to the guest port, including disconnect and reconnect. It
+/// asserts that no physical joystick is present, so it needs a display and no
+/// real controllers attached.
+///
+/// Built and run by scripts/test_pc.sh (from the repository root):
+///
+///     clang -std=c17 -D_GNU_SOURCE -I../ps3recomp/include -c ../ps3recomp/libs/input/cellPad.c -o scratch/pc-tests/cellPad.o
+///     clang++ -std=c++20 -Wall -Wextra -I../ps3recomp/include -I../ps3recomp/libs/input tests/test_pc_input.cpp pc/input.cpp scratch/pc-tests/cellPad.o -lSDL2 -lpthread -o scratch/pc-tests/test_pc_input
+///     scratch/pc-tests/test_pc_input
 #include "../pc/input.h"
 #include "../../ps3recomp/libs/input/cellPad.h"
 #include <cassert>
@@ -17,34 +39,46 @@ void spu_lockline_lock() {}
 void spu_lockline_unlock() {}
 void spu_coh_notify_write(uint32_t) {}
 }
+/// Sample returned for port 0 by the host adapter, and the number of rumble calls seen.
 static CellPadHostSample supplied;
 static int rumble_calls = 0;
+/// Host adapter sample callback: port 0 gets supplied, other ports a neutral sample.
 static void provide(unsigned port, CellPadHostSample* out) {
     *out = port == 0 ? supplied : CellPadHostSample{0, 0, 128, 128, 128, 128, 0, 0};
 }
+/// Host adapter rumble callback: expects port 0 with small=1, large=170 and counts calls.
 static void rumble(unsigned port, uint8_t small, uint8_t large) {
     assert(port == 0 && small == 1 && large == 170);
     ++rumble_calls;
 }
+/// Reads a big-endian 16-bit value from guest memory at ea.
 static unsigned be16(unsigned ea) { return (vm_base[ea] << 8) | vm_base[ea + 1]; }
+/// Reads a big-endian 32-bit value from guest memory at ea.
 static unsigned be32(unsigned ea) { return (be16(ea) << 16) | be16(ea + 2); }
+/// Runs all input checks in sequence; any failure aborts through assert.
 int main() {
     assert(SDL_Init(0) == 0);
     gowa::InputMapping m;
     Uint8 k[SDL_NUM_SCANCODES]{}, b[SDL_CONTROLLER_BUTTON_MAX]{};
     Sint16 a[SDL_CONTROLLER_AXIS_MAX]{};
     Uint32 mouse = 0;
+    /// Samples the mapping with the current state and window focus.
     auto sample = [&] { return m.sample(k, mouse, b, a, true); };
+    /// Returns the two bindings of a button slot as "first|second".
     auto names = [&](size_t slot) {
         return gowa::binding_name(m.keys[slot][0]) + "|" + gowa::binding_name(m.keys[slot][1]);
     };
+    /// Default bindings; slots follow the cellPad button bit order.
     assert(names(14) == "Space|K" && names(13) == "F|L" && names(15) == "Mouse Left|J");
     assert(names(12) == "Mouse Right|I" && names(2) == "Mouse Middle|C" && names(3) == "Escape|Return");
     assert(names(10) == "Left Shift|" && names(11) == "E|" && names(8) == "Q|" && names(9) == "R|");
     assert(names(1) == "Left Ctrl|" && names(0) == "Tab|" && names(4) == "1|" && names(7) == "4|");
     assert(names(gowa::evade_mod_slot) == "Left Alt|");
+    /// No input gives no buttons and centered sticks.
     auto s = sample();
     assert(s.buttons == 0 && s.lx == 128 && s.ry == 128);
+    /// Space presses Cross, W pushes the left stick up, arrows drive the right
+    /// stick; opposite keys cancel and losing focus releases everything.
     k[SDL_SCANCODE_SPACE] = k[SDL_SCANCODE_W] = k[SDL_SCANCODE_LEFT] = 1;
     s = sample();
     assert(s.buttons == CELL_PAD_CTRL_CROSS && s.ly == 0 && s.rx == 0);
@@ -53,6 +87,7 @@ int main() {
     s = m.sample(k, mouse, b, a, false);
     assert(s.buttons == 0 && s.ly == 128 && s.rx == 128);  // focus loss
     memset(k, 0, sizeof(k));
+    /// Second keys and mouse buttons press the face buttons.
     k[SDL_SCANCODE_K] = k[SDL_SCANCODE_F] = 1;
     mouse = SDL_BUTTON(SDL_BUTTON_LEFT) | SDL_BUTTON(SDL_BUTTON_RIGHT);
     s = sample();
@@ -60,6 +95,7 @@ int main() {
                          CELL_PAD_CTRL_TRIANGLE));
     memset(k, 0, sizeof(k));
     mouse = 0;
+    /// Holding the evade modifier moves the movement keys to the right stick.
     k[SDL_SCANCODE_LALT] = k[SDL_SCANCODE_D] = k[SDL_SCANCODE_W] = 1;
     s = sample();
     assert(s.lx == 128 && s.ly == 128 && s.rx == 255 && s.ry == 0 && s.buttons == 0);
@@ -67,16 +103,22 @@ int main() {
     s = sample();
     assert(s.lx == 255 && s.ly == 0 && s.rx == 128);
     memset(k, 0, sizeof(k));
+    /// A key bound to L2 reports the button and full trigger pressure.
     k[SDL_SCANCODE_Q] = 1;
     s = sample();
     assert(s.buttons == CELL_PAD_CTRL_L2 && s.l2 == 255);
     memset(k, 0, sizeof(k));
+    /// Remapping: an empty map keeps the defaults; keys beyond two are dropped;
+    /// unknown names and reserved keys (Insert, F10) are ignored, so a button
+    /// given only invalid keys keeps its default while a pair keeps its valid
+    /// half; unlisted buttons keep their defaults.
     m.configure("", nullptr);
     assert(names(14) == "Space|K");
     m.configure("cross=V|Mouse X1|B,circle=Escape,square=Not A Key,start=Insert,select=F10,"
                 "r1=Insert|G,evade_mod=Right Alt", "cross=b,circle=a,l2=x");
     assert(names(14) == "V|Mouse X1" && names(3) == "Escape|Return" && names(0) == "Tab|");
     assert(names(11) == "G|" && names(gowa::evade_mod_slot) == "Right Alt|");
+    /// The new bindings work and the replaced default no longer does.
     mouse = SDL_BUTTON(SDL_BUTTON_X1);
     assert(sample().buttons == CELL_PAD_CTRL_CROSS);
     mouse = 0;
@@ -87,6 +129,9 @@ int main() {
            (CELL_PAD_CTRL_CROSS | CELL_PAD_CTRL_CIRCLE));
     assert(names(15) == "Mouse Left|J");
     memset(k, 0, sizeof(k));
+    /// Controller input: the pad map sends B to Cross, axes map to 0..255, a
+    /// small deflection inside the dead zone stays centered, and the left
+    /// trigger presses L2.
     b[SDL_CONTROLLER_BUTTON_B] = 1;
     a[SDL_CONTROLLER_AXIS_LEFTX] = -32768;
     a[SDL_CONTROLLER_AXIS_LEFTY] = 32767;
@@ -95,10 +140,15 @@ int main() {
     s = sample();
     assert(s.buttons == (CELL_PAD_CTRL_CROSS | CELL_PAD_CTRL_L2));
     assert(s.lx == 0 && s.ly == 255 && s.rx == 128 && s.l2 == 255);
+    /// Disabling the keyboard ignores key bindings.
     m.keyboard = false;
     k[SDL_SCANCODE_J] = 1;
     assert(!(sample().buttons & CELL_PAD_CTRL_SQUARE));
 
+    /// Guest ABI through the real cellPad: the last sample is written as
+    /// big-endian CellPadData with digital bits, pressure and stick values; a
+    /// released sample clears them; only port 0 reports connected; and
+    /// cellPadSetActDirect forwards the actuator values to the rumble callback.
     uint8_t memory[4096]{};
     vm_base = memory;
     supplied = s;
@@ -126,6 +176,9 @@ int main() {
     assert(cellPadSetActDirect(0, reinterpret_cast<CellPadActParam*>(0x500)) == CELL_OK);
     assert(rumble_calls == 1);
     assert(cellPadEnd() == CELL_OK);
+    /// Optional device test: SDL virtual controller -> window-thread adapter ->
+    /// guest port 0, through connect, button and axis input, disconnect and
+    /// reconnect at a new device index.
     if (getenv("GOWA_DEVICE_TEST")) {
         assert(SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) == 0);
         // No events or rumble should be sent to a user's physical device.

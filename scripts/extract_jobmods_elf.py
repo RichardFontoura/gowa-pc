@@ -1,3 +1,17 @@
+"""Extract the WWS SPU job modules embedded in a big-endian 64-bit PPU ELF.
+
+A job module is recognised by its header: 16-byte aligned, starting with four
+SPU ``ila`` instructions and carrying the magic 0xC0DEC0DE at offset 0x20; the
+word at 0x10 is the entry point and the word at 0x14 the image size. Each
+module runs until the next module (or the end of its PT_LOAD segment),
+trimmed to the image size rounded up to 16 bytes when that is smaller.
+
+Each module is written as ``jobmod_<EA>_e<ENTRY>.bin`` (EA = guest virtual
+address, hex) for ps3recomp's tools/lift_jobmods.py to lift.
+
+Usage example:
+    ../.venv/bin/python scripts/extract_jobmods_elf.py game/EBOOT.ELF --out analysis/jobmods
+"""
 import argparse
 import struct
 import sys
@@ -5,11 +19,21 @@ from pathlib import Path
 
 PT_LOAD = 1
 JOBMOD_MAGIC = 0xC0DEC0DE
+# Offset of JOBMOD_MAGIC from the start of the module header.
 MAGIC_OFFSET = 0x20
+# Top 7 bits (bits 31..25) of the SPU "ila" (immediate load address) opcode.
 ILA_OPCODE7 = 0x21
 
 
 def load_segments(elf: bytes) -> list[tuple[int, int, int]]:
+    """Return the non-empty PT_LOAD segments of an ELF64 big-endian image.
+
+    Args:
+        elf: whole ELF file contents.
+
+    Returns:
+        A list of (virtual address, file offset, file size) tuples.
+    """
     phoff, = struct.unpack_from(">Q", elf, 0x20)
     phentsize, phnum = struct.unpack_from(">HH", elf, 0x36)
     segments = []
@@ -21,6 +45,11 @@ def load_segments(elf: bytes) -> list[tuple[int, int, int]]:
 
 
 def is_module_header(data: bytes, pos: int) -> bool:
+    """Tell whether a job module header starts at ``pos`` in ``data``.
+
+    True when the first four words are ``ila`` instructions and the magic is
+    at ``pos + MAGIC_OFFSET``; False also when the header would not fit.
+    """
     if pos < 0 or pos + MAGIC_OFFSET + 4 > len(data):
         return False
     words = struct.unpack_from(">4I", data, pos)
@@ -30,6 +59,15 @@ def is_module_header(data: bytes, pos: int) -> bool:
 
 
 def find_modules(elf: bytes) -> list[tuple[int, bytes]]:
+    """Find every job module in the loadable segments of an ELF.
+
+    Args:
+        elf: whole ELF file contents.
+
+    Returns:
+        A list of (guest virtual address, module bytes) tuples in segment and
+        address order.
+    """
     modules = []
     magic = struct.pack(">I", JOBMOD_MAGIC)
     for vaddr, offset, filesz in load_segments(elf):
@@ -51,6 +89,11 @@ def find_modules(elf: bytes) -> list[tuple[int, bytes]]:
 
 
 def main() -> None:
+    """Parse arguments, write each module found to --out and list them.
+
+    Prints one line per module on stdout and the total on stderr; exits with
+    an error if the ELF contains no module.
+    """
     parser = argparse.ArgumentParser(description="Extrai os módulos de job WWS (C0DEC0DE) embutidos num ELF PPU")
     parser.add_argument("elf", type=Path)
     parser.add_argument("--out", type=Path, required=True)

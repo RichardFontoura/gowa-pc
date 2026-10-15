@@ -15,12 +15,29 @@
 #include <sys/stat.h>
 #include <vector>
 
+/// Dear ImGui overlay and settings menu (see overlay.h).
+///
+/// Threads: on_swapchain_ready/on_swapchain_lost/on_record run on the Vulkan
+/// backend's present path (the frame clock thread, or the backend's own
+/// present thread when asynchronous presentation is enabled); on_event,
+/// gowa_overlay_tick and gowa_overlay_start run on the frame clock thread;
+/// gowa_overlay_note_flip runs wherever a guest frame is presented. All ImGui
+/// state is touched only from on_record. Cross-thread data goes through the
+/// atomics below or through input_mutex / settings_mutex.
+
+/// Cumulative busy time of a SPURS workload in nanoseconds (cellSpurs HLE).
 extern "C" unsigned long long cellSpurs_kernel_busy_ns(unsigned wid);
+/// Clock used by the video decoder statistics (cellVdec HLE).
 extern "C" uint64_t ps3recomp_vdec_now_ns(void);
+/// Number of pictures the video decoder produced in the second before @p now_ns.
 extern "C" uint32_t ps3recomp_vdec_pictures_in_last_second(uint64_t now_ns);
+/// Time of the last decoded picture, or 0 if none yet.
 extern "C" uint64_t ps3recomp_vdec_last_picture_ns(void);
 
 namespace {
+/// Vulkan entry points the overlay calls directly, resolved through the
+/// backend's vkGetInstanceProcAddr; this file is built with
+/// IMGUI_IMPL_VULKAN_NO_PROTOTYPES and never calls Vulkan prototypes.
 struct VulkanFns {
     PFN_vkCreateRenderPass create_render_pass;
     PFN_vkDestroyRenderPass destroy_render_pass;
@@ -33,48 +50,75 @@ struct VulkanFns {
     PFN_vkGetPhysicalDeviceProperties get_physical_device_properties;
 };
 
+/// Vulkan objects the overlay owns on top of the backend's swapchain. Only
+/// touched on the present path.
 struct Renderer {
+    /// Device, queue and loader handed over by the backend in swapchain_ready.
     rsx_vk_overlay_context context{};
     VulkanFns vk{};
+    /// True once the render pass and the ImGui Vulkan backend are initialized.
     bool ready = false;
+    /// Single-subpass pass that loads the game image and leaves it ready to present.
     VkRenderPass render_pass = VK_NULL_HANDLE;
+    /// Swapchain format the render pass was created for; a change forces a rebuild.
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkExtent2D extent{};
     VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
+    /// Number of valid entries in views/framebuffers (capped at 8 swapchain images).
     uint32_t image_count = 0;
     std::array<VkImageView, 8> views{};
     std::array<VkFramebuffer, 8> framebuffers{};
+    /// GPU description shown in the About tab.
     VkPhysicalDeviceProperties properties{};
+    /// Time of the previous ImGui frame, for io.DeltaTime; 0 when nothing was drawn last present.
     uint64_t last_frame_ns = 0;
 };
 
+/// Numbers shown by the overlay, recomputed in update_stats() on each drawn frame.
 struct Stats {
+    /// Guest flips during the last second.
     float fps = 0;
+    /// Mean and worst interval between consecutive flips in the last second.
     float frame_avg_ms = 0;
     float frame_worst_ms = 0;
+    /// Backend presents per second (includes repeated frames), sampled every 0.5 s.
     float present_fps = 0;
+    /// Summed busy percentage of the EDGE SPURS workloads over the last second;
+    /// -1 until the first sample. May exceed 100 because several workloads run in parallel.
     float spu_busy = -1;
+    /// Last flip intervals in ms, oldest first, for the frame-time plot.
     std::array<float, 120> graph{};
     int graph_count = 0;
+    /// Start time and present_total value of the current present-FPS window.
     uint64_t present_sample_ns = 0;
     uint32_t present_sample_count = 0;
+    /// Start time and summed workload busy time of the current SPU window.
     uint64_t spu_sample_ns = 0;
     unsigned long long spu_sample_busy = 0;
+    /// Latest shader/pipeline counters from the Vulkan backend.
     rsx_vk_shader_stats shaders{};
+    /// Worst per-frame shader compile time over the previous one-second window.
     float shader_worst_ms = 0;
+    /// Running maximum for the current one-second window.
     float shader_window_ms = 0;
     uint64_t shader_sample_ns = 0;
+    /// Pictures the video decoder produced in the last second, while a video plays.
     uint32_t video_fps = 0;
+    /// True when the decoder output a picture within video_idle_ns.
     bool video_playing = false;
 };
 
+/// Controller button forwarded to ImGui gamepad navigation as the given key.
 struct PadKey {
     SDL_GameControllerButton button;
     ImGuiKey key;
 };
 
+/// Bits of window_requests: changes the menu made that must be applied to
+/// the SDL window / swapchain from the frame clock thread.
 enum WindowRequest : unsigned { request_display = 1u << 0, request_vsync = 1u << 1 };
 
+/// SDL controller buttons fed to ImGui for menu navigation.
 constexpr PadKey pad_keys[] = {
     {SDL_CONTROLLER_BUTTON_A, ImGuiKey_GamepadFaceDown},
     {SDL_CONTROLLER_BUTTON_B, ImGuiKey_GamepadFaceRight},
@@ -89,10 +133,14 @@ constexpr PadKey pad_keys[] = {
     {SDL_CONTROLLER_BUTTON_START, ImGuiKey_GamepadStart},
     {SDL_CONTROLLER_BUTTON_BACK, ImGuiKey_GamepadBack},
 };
+/// Localized (Brazilian Portuguese) UI labels. Each table is indexed like the
+/// matching enum, item bit or input slot, so the order must not change.
 constexpr const char* corner_labels[] = {"Superior esquerdo", "Superior direito", "Inferior esquerdo",
                                          "Inferior direito"};
 constexpr const char* mode_labels[] = {"Janela", "Janela sem bordas", "Tela cheia exclusiva"};
+/// Window size choices; the last entry selects window_monitor instead of a size.
 constexpr const char* size_labels[] = {"1280x720", "1600x900", "1920x1080", "Monitor"};
+/// Width/height of the first three size_labels entries.
 constexpr int size_presets[][2] = {{1280, 720}, {1600, 900}, {1920, 1080}};
 constexpr const char* item_labels[] = {"FPS do jogo", "Tempo de quadro (média e pior)",
                                        "Gráfico do tempo de quadro", "FPS de apresentação",
@@ -101,45 +149,76 @@ constexpr const char* item_labels[] = {"FPS do jogo", "Tempo de quadro (média e
 constexpr const char* button_labels[] = {"Select", "L3", "R3", "Start", "Direcional ↑", "Direcional →",
                                          "Direcional ↓", "Direcional ←", "L2", "R2", "L1", "R1",
                                          "Triângulo", "Círculo", "Cross (X)", "Quadrado"};
+/// Capacity of the flip timestamp ring (several seconds of frames at 60 FPS).
 constexpr size_t flip_ring_size = 512;
+/// SPURS workload IDs of this title's EDGE geometry jobs, summed for the SPU readout.
 constexpr unsigned edge_workloads[] = {13, 14, 15};
+/// DejaVu Sans locations tried in order (common Linux distribution paths);
+/// ImGui's built-in font is the fallback.
 constexpr const char* font_paths[] = {
     "/usr/share/fonts/TTF/DejaVuSans.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/dejavu/DejaVuSans.ttf",
 };
+/// Font size at 720p and 100 % scale; scaled by display_scale() and overlay_scale.
 constexpr float base_font_px = 16.0f;
+/// A video counts as playing while its last decoded picture is newer than this.
 constexpr uint64_t video_idle_ns = 500000000ull;
 
+/// Ring of guest flip timestamps (now_ns()), written by gowa_overlay_note_flip().
 std::array<std::atomic<uint64_t>, flip_ring_size> flip_ns;
+/// Total flips recorded; slot of flip i is i % flip_ring_size. Release/acquire
+/// pairs with the ring writes.
 std::atomic<uint32_t> flip_total{0};
+/// Total backend presents (on_record calls), for the present-FPS readout.
 std::atomic<uint32_t> present_total{0};
+/// Mirror of settings.show_fps readable without settings_mutex.
 std::atomic<bool> overlay_visible{false};
+/// Set once the hooks are registered; gowa_overlay_tick() is a no-op before.
 std::atomic<bool> started{false};
+/// Whether the menu should be open. Toggled by keys (on_event), the controller
+/// combo (gowa_overlay_tick) and the Close button (on_record).
 std::atomic<bool> menu_wanted{false};
+/// Pending WindowRequest bits, set by the menu and consumed by gowa_overlay_tick().
 std::atomic<unsigned> window_requests{0};
+/// Window size in SDL window coordinates, used to map mouse positions to swapchain pixels.
 std::atomic<int> window_width{1280};
 std::atomic<int> window_height{720};
+/// Menu state last applied to input capture (frame clock thread only).
 bool menu_applied = false;
+/// Whether the menu was drawn on the previous present (present path only);
+/// used to reset input and focus when it first appears.
 bool menu_drawn = false;
+/// Previous state of the controller combo, for edge detection (frame clock thread only).
 bool combo_held = false;
+/// Index of the selected menu tab, for Q/E and L1/R1 cycling.
 int menu_tab = 0;
+/// Guards queued_events and queued_pad, passed from the frame clock thread to on_record.
 std::mutex input_mutex;
+/// SDL mouse/keyboard events captured while the menu is open (capped at 512).
 std::vector<SDL_Event> queued_events;
+/// Latest controller state for menu navigation.
 gowa::PadState queued_pad;
+/// Last state sent to ImGui for each pad_keys entry, so only changes are forwarded.
 std::array<bool, std::size(pad_keys)> pad_down{};
+/// Binding table shown in the Controls tab, captured at start with localized names.
 std::vector<gowa::BindingInfo> bindings;
+/// Guards game_ini (settings and file I/O).
 std::mutex settings_mutex;
+/// Loaded settings file; the source of truth for every overlay option.
 gowa::GameIni game_ini;
 Renderer renderer;
 Stats stats;
 
+/// Monotonic clock in nanoseconds.
 uint64_t now_ns() {
     timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return uint64_t(ts.tv_sec) * 1000000000ull + uint64_t(ts.tv_nsec);
 }
 
+/// Formats @p value with @p digits decimals using a comma as the decimal
+/// separator, matching the Portuguese UI.
 std::string decimal(float value, int digits) {
     char text[32];
     snprintf(text, sizeof text, "%.*f", digits, value);
@@ -148,26 +227,32 @@ std::string decimal(float value, int digits) {
     return text;
 }
 
+/// Copy of the current settings taken under settings_mutex.
 gowa::GameSettings settings_snapshot() {
     std::lock_guard<std::mutex> lock(settings_mutex);
     return game_ini.settings;
 }
 
+/// Writes game.ini to disk under settings_mutex (blocking file I/O with fsync).
 void save_settings() {
     std::lock_guard<std::mutex> lock(settings_mutex);
     gowa::save_game_ini(game_ini);
 }
 
+/// Loader callback for ImGui_ImplVulkan_LoadFunctions; @p user is the
+/// rsx_vk_overlay_context whose instance resolves the name.
 PFN_vkVoidFunction load_vulkan(const char* name, void* user) {
     const auto* ctx = static_cast<const rsx_vk_overlay_context*>(user);
     return ctx->get_instance_proc_addr(ctx->instance, name);
 }
 
+/// Resolves Vulkan function @p name from the renderer's instance into @p fn (null if missing).
 template <typename T>
 void load(T& fn, const char* name) {
     fn = reinterpret_cast<T>(renderer.context.get_instance_proc_addr(renderer.context.instance, name));
 }
 
+/// Fills renderer.vk; returns false if any entry point is unavailable.
 bool load_functions() {
     VulkanFns& f = renderer.vk;
     load(f.create_render_pass, "vkCreateRenderPass");
@@ -184,6 +269,11 @@ bool load_functions() {
            f.cmd_begin_render_pass && f.cmd_end_render_pass && f.get_physical_device_properties;
 }
 
+/// Creates renderer.render_pass for swapchain images of @p format. The backend
+/// leaves the image in TRANSFER_DST after blitting the game frame, so the pass
+/// loads that content (no clear), draws on top and transitions the image to
+/// PRESENT_SRC itself; the backend skips its own transition when on_record
+/// returns 1. The dependencies order the blit before the overlay draw.
 bool create_render_pass(VkFormat format) {
     VkAttachmentDescription color{};
     color.format = format;
@@ -223,6 +313,7 @@ bool create_render_pass(VkFormat format) {
                                           &renderer.render_pass) == VK_SUCCESS;
 }
 
+/// Destroys every per-image view and framebuffer and resets image_count.
 void destroy_targets() {
     for (uint32_t i = 0; i < renderer.framebuffers.size(); ++i) {
         if (renderer.framebuffers[i])
@@ -235,6 +326,9 @@ void destroy_targets() {
     renderer.image_count = 0;
 }
 
+/// Creates an image view and framebuffer for each swapchain image (at most 8).
+/// Returns false on the first Vulkan failure; already-created objects remain
+/// and are released by destroy_targets().
 bool create_targets(const rsx_vk_overlay_swapchain* sc) {
     renderer.image_count = std::min<uint32_t>(sc->image_count, renderer.views.size());
     for (uint32_t i = 0; i < renderer.image_count; ++i) {
@@ -260,6 +354,8 @@ bool create_targets(const rsx_vk_overlay_swapchain* sc) {
     return true;
 }
 
+/// Loads ImGui's Vulkan function pointers and initializes its Vulkan renderer
+/// on the backend's device and queue, using renderer.render_pass.
 bool init_imgui_vulkan(const rsx_vk_overlay_swapchain* sc) {
     if (!ImGui_ImplVulkan_LoadFunctions(renderer.context.api_version, load_vulkan, &renderer.context))
         return false;
@@ -278,10 +374,16 @@ bool init_imgui_vulkan(const rsx_vk_overlay_swapchain* sc) {
     return ImGui_ImplVulkan_Init(&info);
 }
 
+/// Backend hook: the swapchain is about to be destroyed; drop the per-image
+/// targets that reference its images. The render pass and ImGui state survive.
 void on_swapchain_lost(void*) {
     if (renderer.ready) destroy_targets();
 }
 
+/// Backend hook: a (new) swapchain exists. On first call, or when the image
+/// format changed, (re)creates the render pass and the ImGui Vulkan renderer;
+/// then rebuilds the per-image targets and records extent and present mode.
+/// Failures are logged and leave the overlay not drawing.
 void on_swapchain_ready(const rsx_vk_overlay_context* ctx, const rsx_vk_overlay_swapchain* sc, void*) {
     if (renderer.ready && sc->format != renderer.format) {
         destroy_targets();
@@ -309,6 +411,8 @@ void on_swapchain_ready(const rsx_vk_overlay_context* ctx, const rsx_vk_overlay_
     }
 }
 
+/// Refreshes the backend shader counters and rolls the one-second worst
+/// shader-compile-time window.
 void update_shader_stats(uint64_t now) {
     rsx_vulkan_backend_shader_stats(&stats.shaders);
     stats.shader_window_ms = std::max(stats.shader_window_ms, float(stats.shaders.frame_ms));
@@ -319,11 +423,13 @@ void update_shader_stats(uint64_t now) {
     }
 }
 
+/// Draws a yellow "compiling shaders: N" line while pipelines are pending.
 void draw_shader_note() {
     if (stats.shaders.pending)
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Compilando shaders: %u", stats.shaders.pending);
 }
 
+/// Updates whether a video (cinematic) is playing and its decoded pictures per second.
 void update_video_stats() {
     const uint64_t now = ps3recomp_vdec_now_ns();
     const uint64_t last = ps3recomp_vdec_last_picture_ns();
@@ -331,6 +437,10 @@ void update_video_stats() {
     stats.video_fps = stats.video_playing ? ps3recomp_vdec_pictures_in_last_second(now) : 0;
 }
 
+/// Recomputes all Stats at time @p now. FPS and frame times come from the
+/// flip ring (only flips within the last second, newest first, keeping 8
+/// slots of slack from the writer); present FPS and SPU busy use their own
+/// sampling windows; shader and video stats are refreshed too.
 void update_stats(uint64_t now) {
     const uint32_t total = flip_total.load(std::memory_order_acquire);
     const uint32_t n = std::min<uint32_t>(total, flip_ring_size - 8);
@@ -381,10 +491,13 @@ void update_stats(uint64_t now) {
     update_video_stats();
 }
 
+/// UI scale factor relative to 720p swapchain height, never below 1.
 float display_scale() {
     return std::max(1.0f, float(renderer.extent.height) / 720.0f);
 }
 
+/// Draws the non-interactive performance window in the configured corner with
+/// the enabled items. FPS is green at 29+, yellow at 20+, red below.
 void draw_overlay(const gowa::GameSettings& s) {
     const float scale = float(s.overlay_scale) / 100.0f;
     const float pad = 10.0f * display_scale();
@@ -437,6 +550,8 @@ void draw_overlay(const gowa::GameSettings& s) {
     ImGui::PopFont();
 }
 
+/// Draws only the shader-compilation note, used when the overlay is hidden
+/// but pipelines are still compiling (stutter explanation for the player).
 void draw_compiling_note(const gowa::GameSettings& s) {
     const float pad = 10.0f * display_scale();
     const ImVec2 size = ImGui::GetIO().DisplaySize;
@@ -454,6 +569,8 @@ void draw_compiling_note(const gowa::GameSettings& s) {
     ImGui::PopFont();
 }
 
+/// Maps the few SDL keys the menu needs (navigation, modifiers, Q/E tab
+/// switching) to ImGui keys; everything else returns ImGuiKey_None.
 ImGuiKey imgui_key(SDL_Keycode key) {
     switch (key) {
     case SDLK_TAB: return ImGuiKey_Tab;
@@ -481,6 +598,10 @@ ImGuiKey imgui_key(SDL_Keycode key) {
     }
 }
 
+/// Drains the events queued by on_event and the latest controller state into
+/// ImGui. Mouse coordinates are scaled from window to swapchain pixels; pad
+/// buttons are sent on change; the left stick becomes analog navigation keys
+/// with a 25 % deadzone. Runs on the present path, only while the menu is open.
 void feed_input() {
     std::vector<SDL_Event> events;
     gowa::PadState pad;
@@ -542,6 +663,8 @@ void feed_input() {
     else io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
 }
 
+/// Menu tab "Overlay": visibility, corner, scale, opacity and item checkboxes.
+/// Edits @p s in place.
 void draw_overlay_tab(gowa::GameSettings& s) {
     ImGui::Checkbox("Mostrar overlay (F10)", &s.show_fps);
     int corner = int(s.corner);
@@ -558,6 +681,8 @@ void draw_overlay_tab(gowa::GameSettings& s) {
     ImGui::TextDisabled("O FPS conta os quadros que o jogo entrega (flips), não as apresentações.");
 }
 
+/// Menu tab "Imagem": display mode, VSync and window size (preset or
+/// monitor; a custom size from game.ini is shown but not offered). Edits @p s in place.
 void draw_image_tab(gowa::GameSettings& s) {
     int mode = int(s.display_mode);
     if (ImGui::Combo("Modo de exibição", &mode, mode_labels, int(std::size(mode_labels))))
@@ -589,6 +714,7 @@ void draw_image_tab(gowa::GameSettings& s) {
     ImGui::TextDisabled("Imagem interna do jogo: 1280x720, escalada para a janela.");
 }
 
+/// Menu tab "Controles": read-only table of the current bindings.
 void draw_controls_tab() {
     ImGui::TextWrapped("Mapeamento atual (somente leitura). Para remapear, use o launcher.");
     ImGui::Spacing();
@@ -615,6 +741,7 @@ void draw_controls_tab() {
     ImGui::TextDisabled("Controle: R3 + L2 abre e fecha este menu.");
 }
 
+/// Localized name of a Vulkan physical device type.
 const char* device_type(VkPhysicalDeviceType type) {
     switch (type) {
     case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: return "dedicada";
@@ -625,6 +752,7 @@ const char* device_type(VkPhysicalDeviceType type) {
     }
 }
 
+/// Display name of a Vulkan present mode.
 const char* present_mode_name(VkPresentModeKHR mode) {
     switch (mode) {
     case VK_PRESENT_MODE_FIFO_KHR: return "FIFO (VSync)";
@@ -634,6 +762,8 @@ const char* present_mode_name(VkPresentModeKHR mode) {
     }
 }
 
+/// Menu tab "Sobre": build commits (GOWA_COMMIT / GOWA_TOOLKIT_COMMIT from
+/// CMake), GPU and swapchain details, and the game.ini path.
 void draw_about_tab() {
     const VkPhysicalDeviceProperties& p = renderer.properties;
     ImGui::Text("God of War: Ascension (BCUS98232), port nativo");
@@ -652,6 +782,9 @@ void draw_about_tab() {
     ImGui::Text("Dear ImGui %s", IMGUI_VERSION);
 }
 
+/// Compares settings before/after a menu frame and queues the window_requests
+/// bits gowa_overlay_tick() must apply (SDL window calls belong on the frame
+/// clock thread, not on the present path).
 void request_window_changes(const gowa::GameSettings& before, const gowa::GameSettings& after) {
     unsigned requests = 0;
     if (before.display_mode != after.display_mode || before.window_monitor != after.window_monitor ||
@@ -661,6 +794,9 @@ void request_window_changes(const gowa::GameSettings& before, const gowa::GameSe
     if (requests) window_requests.fetch_or(requests);
 }
 
+/// Draws the centred settings window with its four tabs and the Close button.
+/// Q/E or L1/R1 cycle tabs; focus is grabbed the first frame the menu appears.
+/// Edits @p s in place; the caller detects and stores the changes.
 void draw_menu(gowa::GameSettings& s) {
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     const float ds = display_scale();
@@ -678,6 +814,7 @@ void draw_menu(gowa::GameSettings& s) {
         if (ImGui::IsKeyPressed(ImGuiKey_E, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false)) step = 1;
         const int forced = step ? (menu_tab + step + 4) % 4 : -1;
         if (ImGui::BeginTabBar("##tabs")) {
+            /// Opens tab @p index, forcing selection when Q/E asked for it; returns whether it is open.
             auto tab = [&](int index, const char* label) {
                 const bool open = ImGui::BeginTabItem(label, nullptr,
                                                       forced == index ? ImGuiTabItemFlags_SetSelected : 0);
@@ -700,6 +837,12 @@ void draw_menu(gowa::GameSettings& s) {
     ImGui::PopFont();
 }
 
+/// Backend hook, called for every present with the command buffer that just
+/// copied the game frame into swapchain image @p image_index. Returns 0 to let
+/// the backend transition the image itself (nothing to draw, or not ready), or
+/// 1 after recording the overlay render pass, which also performs the
+/// transition to PRESENT_SRC. Settings changed in the menu are stored back
+/// into game_ini here (saved to disk later, when the menu closes).
 int on_record(VkCommandBuffer cmd, uint32_t image_index, void*) {
     present_total.fetch_add(1, std::memory_order_relaxed);
     const bool menu = menu_wanted.load(std::memory_order_relaxed);
@@ -754,6 +897,12 @@ int on_record(VkCommandBuffer cmd, uint32_t image_index, void*) {
     return 1;
 }
 
+/// Backend hook, called for each SDL event while the backend pumps the window
+/// (frame clock thread). Returning nonzero consumes the event so the backend
+/// ignores it. F10 toggles the overlay (saved immediately unless the menu is
+/// open); Insert toggles the menu and Escape closes it; a fresh Escape press
+/// is always consumed so the backend never treats it as a quit request. While the menu is open, mouse and
+/// keyboard events are queued for feed_input() and keyboard events are consumed.
 int on_event(const SDL_Event* e, void*) {
     if (e->type == SDL_WINDOWEVENT && e->window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
         window_width.store(e->window.data1);
@@ -796,6 +945,11 @@ int on_event(const SDL_Event* e, void*) {
     }
 }
 
+/// Applies queued window changes on the frame clock thread: VSync through the
+/// backend (swapchain recreated on its next frame) and display mode / size
+/// through SDL (borderless desktop fullscreen, exclusive fullscreen at the
+/// desktop mode, or a centred / monitor-filling window). Refreshes the cached
+/// window size afterwards.
 void apply_window(const gowa::GameSettings& s, unsigned requests) {
     if (requests & request_vsync) rsx_vulkan_backend_set_vsync(s.vsync);
     SDL_Window* window = rsx_vulkan_backend_window();
@@ -832,6 +986,8 @@ void apply_window(const gowa::GameSettings& s, unsigned requests) {
     window_height.store(h);
 }
 
+/// Creates the ImGui context (no imgui.ini or log file, keyboard and gamepad
+/// navigation on), applies the dark style and loads the UI font.
 void setup_imgui() {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
@@ -851,12 +1007,14 @@ void setup_imgui() {
 }
 }
 
+/// Appends the current time to the flip ring (single writer); see overlay.h.
 void gowa_overlay_note_flip() {
     const uint32_t i = flip_total.load(std::memory_order_relaxed);
     flip_ns[i % flip_ring_size].store(now_ns(), std::memory_order_relaxed);
     flip_total.store(i + 1, std::memory_order_release);
 }
 
+/// Loads settings, sets up ImGui and registers the backend hooks; see overlay.h.
 void gowa_overlay_start() {
     {
         std::lock_guard<std::mutex> lock(settings_mutex);
@@ -887,6 +1045,7 @@ void gowa_overlay_start() {
     started.store(true);
 }
 
+/// Menu combo, input capture, save-on-close and window changes; see overlay.h.
 void gowa_overlay_tick() {
     if (!started.load(std::memory_order_relaxed)) return;
     const gowa::PadState pad = gowa_input_pad_state();

@@ -1,4 +1,23 @@
 #!/usr/bin/env bash
+# Run one executable of an isolated performance A/B snapshot (made by
+# build_perf_candidate.py / relink_perf_snapshot.py) in a fresh session.
+#
+# Usage: run_perf_candidate.sh SNAPSHOT_DIR [VARIANT [game options...]]
+#   VARIANT  candidate     SNAPSHOT_DIR/candidate/GowaPerfCand (default)
+#            baseline      SNAPSHOT_DIR/baseline/GowaPerfBase
+#            fps           SNAPSHOT_DIR/candidate/GowaFpsFix
+#            fps-baseline  SNAPSHOT_DIR/baseline/GowaFpsBase2
+#
+# Input:  the snapshot executable, game/disc/, game/update/ and game/EBOOT.ELF.
+# Output: a new session directory SNAPSHOT_DIR/sessions/<VARIANT>-XXXXXX with
+#         its own hdd0/ (game/<TITLE_ID> linked to game/update) and hdd1/, so
+#         runs never share save data; the game runs from inside it, booting the
+#         update's GOWA.SELF, with stdout/stderr in game.log there.
+#
+# Environment: the runtime switches documented in run.sh with the same
+# defaults, except that the SPURS_KERN_* variables are left to the runtime's
+# own defaults; AUDIO_RATE (default 1) also prints audio mixing-rate reports.
+# The VFS variables are always set by this script and cannot be overridden.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 [[ $# -ge 1 ]] || die "uso: run_perf_candidate.sh <diretório A/B> [candidate|baseline]"

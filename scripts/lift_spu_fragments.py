@@ -1,4 +1,26 @@
 #!/usr/bin/env python3
+"""Lift position-independent SPU code fragments found through runtime captures.
+
+Some SPU jobs copy code fragments to local-store addresses chosen at runtime,
+so they cannot be lifted at a fixed address. Running the game with
+``SPU_PIC_CAPTURE=<file>`` makes the runtime append one line per distinct
+captured entry: ``<local-store address> <resident overlay> <64 code bytes in
+hex>``. This script finds each captured code sequence in the game ELF
+(--elf, default game/GOWA.update.ELF; output under --out, default spu/),
+groups the matching file offsets into clusters (offsets closer than --gap),
+and lifts every cluster with at least --min-entries entries as a
+position-independent region: the cluster span plus --margin on each side,
+16-byte aligned and at most 0x3F000 bytes (one local store).
+
+Each region goes to ``<out>/<name>_<ELF offset>/``: spu_recomp.c/.h from
+ps3recomp's spu_lifter (with the captured entries as function seeds), the raw
+region bytes and a constructor that registers it with spu_pic_register()
+appended to spu_recomp.c, and region.txt with offset, size and seed count.
+
+Usage example:
+    SPU_PIC_CAPTURE=scratch/pic.txt scripts/run.sh
+    ../.venv/bin/python scripts/lift_spu_fragments.py scratch/pic.txt
+"""
 import argparse
 from pathlib import Path
 import subprocess
@@ -10,6 +32,7 @@ TOOLS = WORKSPACE / 'ps3recomp' / 'tools'
 
 
 def locate(elf, blob):
+    """Return every offset at which ``blob`` occurs in ``elf`` (overlaps included)."""
     hits, start = [], 0
     while True:
         i = elf.find(blob, start)
@@ -20,6 +43,23 @@ def locate(elf, blob):
 
 
 def lift_region(elf, lo, hi, seeds, name, out):
+    """Lift ``elf[lo:hi]`` as a position-independent SPU image.
+
+    Wraps the region in a temporary SPU ELF based at 0, runs spu_lifter in PIC
+    mode with automatic function discovery plus the given seeds, appends the
+    region bytes and a registration constructor to the generated source, and
+    writes region.txt. Prints a one-line summary; exits with the lifter's
+    stderr if it fails.
+
+    Args:
+        elf: whole ELF file contents.
+        lo: start offset of the region in the file.
+        hi: end offset (exclusive).
+        seeds: function entry offsets relative to ``lo``; the first is also
+            the wrapped ELF's entry point.
+        name: output subdirectory and C symbol prefix.
+        out: Path of the parent output directory.
+    """
     sys.path.insert(0, str(TOOLS))
     from wrap_spu_elf import wrap
     region = elf[lo:hi]
@@ -57,6 +97,12 @@ def lift_region(elf, lo, hi, seeds, name, out):
 
 
 def main():
+    """Parse arguments, locate the captured entries, cluster and lift them.
+
+    Lines that do not have three fields, or whose overlay is not among the
+    --overlay values when any are given, are ignored. Clusters with fewer than
+    --min-entries entries or larger than a local store are skipped.
+    """
     parser = argparse.ArgumentParser(description='Lift the SPU code fragments jobs copy to runtime-chosen local-store addresses, from SPU_PIC_CAPTURE files, as position-independent images.')
     parser.add_argument('captures', type=Path, nargs='+')
     parser.add_argument('--elf', type=Path, default=PORT / 'game' / 'GOWA.update.ELF')

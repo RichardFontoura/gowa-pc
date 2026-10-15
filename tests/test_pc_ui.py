@@ -1,4 +1,15 @@
-"""Opt-in real Tk smoke: GOWA_UI_TEST=1, DISPLAY and a usable Tk installation."""
+"""Opt-in real Tk smoke: GOWA_UI_TEST=1, DISPLAY and a usable Tk installation.
+
+Opens a real ``Launcher`` window (``launcher/gowa_launcher.py``) with its
+config, ``game.ini``, backup and savedata paths redirected to a temporary
+directory. The game itself is never started; the process test runs a Python
+child that ignores SIGTERM. Set ``GOWA_UI_SCREENSHOT=<file>`` to save a
+screenshot of the Controls page with ImageMagick ``import``.
+
+Run from the repository root::
+
+    GOWA_UI_TEST=1 xvfb-run -a python -m unittest discover -s tests -p 'test_pc_*.py'
+"""
 import os
 from pathlib import Path
 import sys
@@ -11,7 +22,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'launcher'))
 
 @unittest.skipUnless(os.environ.get('GOWA_UI_TEST') == '1', 'requires a display and Tk')
 class LauncherUITest(unittest.TestCase):
+    """Process control and page handling of a real ``Launcher`` window."""
     def test_process_start_and_forced_stop(self):
+        """Play starts the child and logs its output; Stop escalates to SIGKILL when SIGTERM is ignored.
+
+        Checks that output reaches ``last_run.log`` and the log view, and that the
+        launcher clears its process once the child dies with -9.
+        """
         import tkinter as tk
         import time
         import gowa_launcher as ui
@@ -57,6 +74,10 @@ class LauncherUITest(unittest.TestCase):
                     root.destroy()
 
     def test_pages_and_saved_remap(self):
+        """Every page can be shown, and a key and pad remap is saved and then reset to defaults.
+
+        Also checks that the pad button labels follow the selected pad style.
+        """
         import tkinter as tk
         import gowa_launcher as ui
         import settings

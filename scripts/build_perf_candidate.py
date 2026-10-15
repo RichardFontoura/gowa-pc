@@ -3,7 +3,18 @@
 
 Copies existing link inputs, recompiles only audio/SPU channel objects, and
 links two distinct executables. Does not launch either game. Run from anywhere
-with the workspace .venv/bin/python. Output must be a new directory.
+with ../.venv/bin/python. Output must be a new directory.
+
+Usage example:
+    ../.venv/bin/python scripts/build_perf_candidate.py --output scratch/perf-ab
+
+Layout of the output directory: baseline/ps3recomp and candidate/ps3recomp
+(source copies; the candidate has PATCH applied), link-inputs/ (frozen copies
+of every object and archive the game links), manifest.json (hashes of the
+patched sources and of the link inputs), baseline/GowaPerfBase,
+candidate/GowaPerfCand, and one log per command. The audio and SPU unit tests
+are built against each tree and must pass. run_perf_candidate.sh runs the
+results; relink_perf_snapshot.py rebuilds a variant with further changes.
 """
 import argparse
 from datetime import datetime
@@ -18,12 +29,29 @@ import subprocess
 PORT = Path(__file__).resolve().parents[1]
 WORKSPACE = PORT.parent
 SDK = WORKSPACE / "ps3recomp"
+# Shared build tree: only its Ninja recipes, compile_commands.json and link
+# inputs are read; nothing is built or written there.
 BUILD = PORT / "build/linux-vulkan"
+# ps3recomp patch applied to the candidate tree only.
 PATCH = PORT / "patches/performance-2026-10-14.patch"
+# ps3recomp files PATCH touches, relative to the checkout. The first two are
+# the translation units recompiled per variant; spu_dma.h is a header that
+# spu_channels.c includes and is only hash-checked.
 CHANGED = ("libs/audio/cellAudio.c", "runtime/spu/spu_channels.c", "runtime/spu/spu_dma.h")
 
 
 def run(args, log, cwd=None, env=None):
+    """Run a command with stdout and stderr redirected to a log file.
+
+    Args:
+        args: command and arguments; each item is converted with str().
+        log: Path of the log file (overwritten).
+        cwd: working directory for the command, or None for the current one.
+        env: environment mapping, or None to inherit the current one.
+
+    Raises:
+        RuntimeError: if the command exits with a non-zero status.
+    """
     with log.open("w") as out:
         result = subprocess.run([str(a) for a in args], cwd=cwd, env=env,
                                 stdout=out, stderr=subprocess.STDOUT)
@@ -32,11 +60,30 @@ def run(args, log, cwd=None, env=None):
 
 
 def fingerprint(path):
+    """Return (inode, size, mtime_ns, ctime_ns) of a file.
+
+    Comparing fingerprints taken before and after copying detects a concurrent
+    build that rewrote or replaced the file in the meantime.
+    """
     stat = path.stat()
     return (stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
 
 
 def main():
+    """Create the snapshot, build both executables and run the unit tests.
+
+    Steps: copy ps3recomp's include/, libs/ and runtime/ into the baseline
+    tree and check the CHANGED files against the live checkout; clone it into
+    the candidate tree and apply PATCH (dry run first); read the game's link
+    command from Ninja without running it, freeze copies of its .o/.a inputs
+    and record them in manifest.json; then, per variant, recompile the two
+    CHANGED sources with their compile_commands.json recipe re-pointed at the
+    variant tree, replace them in a copy of libps3recomp_runtime.a, link the
+    executable, and build and run the audio pacing and SPU tests (the
+    candidate also runs a traced SPU test whose event counts are asserted).
+    Finally the candidate's audio ring/port tests are built with gcc and clang
+    and run, plus the live audio pacing test. Runs at nice level 10.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path,
                         default=PORT / "scratch" / datetime.now().strftime("perf-build-%Y%m%d-%H%M%S"))

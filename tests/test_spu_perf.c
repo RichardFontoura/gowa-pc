@@ -1,21 +1,45 @@
-/* Actual MFC/PM paths, fixed work and semantic checks. Build with the same
- * runtime dependencies as ps3recomp's test_spu_mfc_slots.c. SPU_IMPLEMENTATION
- * selects the isolated baseline or candidate spu_channels.c. */
+/// Timing and correctness test for hot SPU channel paths in spu_channels.c.
+///
+/// Runs the actual MFC and SPURS policy-module paths a fixed number of times,
+/// prints how long each loop took, and asserts the semantic result of every
+/// operation: list-stall acknowledgement and tag completion, 16 KiB PUT/GET DMA
+/// between local store and guest memory, and the policy-module workload poll.
+/// Intended for comparing a baseline and a candidate build of the same file.
+///
+/// SPU_IMPLEMENTATION is the quoted path of the spu_channels.c to test. It needs
+/// the same runtime dependencies as ps3recomp's test_spu_mfc_slots.c. Built and
+/// run by scripts/build_perf_candidate.py, roughly:
+///
+///     cc -std=gnu17 -O2 -pthread -I <ps3recomp>/include
+///        -I <ps3recomp>/runtime/spu -I <ps3recomp>/runtime/platform
+///        -DSPU_IMPLEMENTATION='"<ps3recomp>/runtime/spu/spu_channels.c"'
+///        tests/test_spu_perf.c <spu runtime sources> win32_compat.c -lm
+///     ./test_spu_perf
+///
+/// The cc command is a single line, wrapped here for readability; see the
+/// script for the exact list of SPU runtime sources. With SPU_MFC_TRACE=1 and
+/// SPURS_PM_TRACE=1 the script also counts the trace lines of each path.
 #include <stdint.h>
 #include <assert.h>
 #include <time.h>
+/// 128 KiB guest memory image used as vm_base for DMA transfers.
 static uint8_t guest[131072];
 uint8_t* vm_base = guest;
 uint32_t ppu_vm_size = sizeof guest;
 #include SPU_IMPLEMENTATION
 extern _Thread_local volatile unsigned g_spurs_pm_polls;
+/// Globals the SPU runtime references that are owned by other modules in the
+/// full build; zero here.
 uint32_t g_barrier_sync_watch, g_spu_image_src_ea, g_spu_image_ls_start, g_spu_image_span;
 uint32_t g_ydkj_real_taskset_ea, g_ydkj_real_taskid, g_ydkj_real_spurs_ea;
-/* Unused title/taskset hooks: fail if a fixture accidentally reaches them. */
+/// Unused title/taskset hooks: fail if a fixture accidentally reaches them.
 void spurs_ef_set_from_spu(uint32_t ea, uint16_t bits) { (void)ea; (void)bits; abort(); }
+/// Unused hook; aborts if reached.
 void ydkj_wake_all_event_flags(void) { abort(); }
+/// Unused hook; aborts if reached.
 uint64_t spurs_pm_build_context(uint8_t* ls, uint32_t ea, uint32_t task, uint32_t num, uint32_t tag)
 { (void)ls; (void)ea; (void)task; (void)num; (void)tag; abort(); }
+/// Millisecond monotonic clock required by the SPU runtime.
 unsigned long long ps3_ms_now(void)
 {
     struct timespec ts;
@@ -23,6 +47,7 @@ unsigned long long ps3_ms_now(void)
     return (unsigned long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+/// Monotonic time in seconds, used to time each benchmark loop.
 static double seconds(void)
 {
     struct timespec ts;
@@ -30,6 +55,13 @@ static double seconds(void)
     return ts.tv_sec + ts.tv_nsec * 1e-9;
 }
 
+/// Runs three timed loops of 20000 iterations on one SPU context, with the
+/// first two entries of the guest page bitmap marked mapped:
+/// - resume: acknowledging a stalled DMA list clears the stall and completes tag 0;
+/// - put16k: a 16 KiB PUT copies local store to guest memory, and a GET back
+///   into another local store range reproduces the data;
+/// - poll: an indirect branch to the policy module's workload poll address
+///   counts one poll, returns 0 in r3 and continues at the link register.
 int main(void)
 {
     const unsigned iterations = 20000;

@@ -9,22 +9,39 @@
 #include <sstream>
 #include <string>
 
+/// Keyboard/mouse/SDL controller adapter behind the cellPad HLE library.
+/// The frame clock thread polls SDL in gowa_input_tick() and publishes a
+/// sample under state_mutex; guest threads read it through read_sample() and
+/// request rumble through set_rumble(), so SDL is never touched off the
+/// window thread.
+
 namespace {
+/// Slot names accepted in GOWA_KEY_MAP / GOWA_PAD_MAP; index = slot = cellPad button bit.
 constexpr const char* names[] = {"select", "l3", "r3", "start", "up", "right",
     "down", "left", "l2", "r2", "l1", "r1", "triangle", "circle", "cross", "square", "evade_mod"};
+/// Mouse binding names; index + 1 is the SDL mouse button number.
 constexpr const char* mouse_names[] = {"Mouse Left", "Mouse Middle", "Mouse Right", "Mouse X1", "Mouse X2"};
+/// Default keyboard/mouse binding per slot, in the same syntax as GOWA_KEY_MAP values.
 constexpr const char* default_keys[] = {"Tab", "Left Ctrl", "Mouse Middle|C", "Escape|Return", "1", "2",
     "3", "4", "Q", "R", "Left Shift", "E", "Mouse Right|I", "F|L", "Space|K", "Mouse Left|J", "Left Alt"};
+/// Returns @p s without leading/trailing whitespace.
 std::string trim(std::string s) {
     const auto a = s.find_first_not_of(" \t\r\n"), b = s.find_last_not_of(" \t\r\n");
     return a == std::string::npos ? "" : s.substr(a, b - a + 1);
 }
+/// Maps a raw SDL stick axis (-32768..32767) to the DualShock 0..255 range
+/// with 128 at rest. Values inside @p deadzone read as centre and the rest of
+/// the travel is rescaled so the output still reaches 0 and 255.
 uint8_t axis(int raw, int deadzone) {
     if (std::abs(raw) <= deadzone) return 128;
     if (raw < 0) return uint8_t(128 - (-raw - deadzone) * 128 / (32768 - deadzone));
     return uint8_t(128 + (raw - deadzone) * 127 / (32767 - deadzone));
 }
+/// Maps a raw SDL trigger axis (0..32767) to pressure 0..255.
 uint8_t trigger(int raw) { return uint8_t(std::clamp(raw, 0, 32767) * 255 / 32767); }
+/// Parses one binding: a `Mouse ...` name (case-insensitive) or an SDL scancode
+/// name. Insert and F10 are refused because the overlay reserves them for the
+/// menu and the overlay toggle. Returns false for unknown names.
 bool parse_binding(const std::string& text, gowa::Binding& out) {
     for (size_t i = 0; i < std::size(mouse_names); ++i) {
         if (SDL_strcasecmp(text.c_str(), mouse_names[i]) == 0) {
@@ -37,6 +54,9 @@ bool parse_binding(const std::string& text, gowa::Binding& out) {
     out = {gowa::BindingKind::key, int(code)};
     return true;
 }
+/// Parses up to two `|`-separated bindings into @p out. Invalid or surplus
+/// parts are reported on stderr (quoting @p entry) and skipped. @p out is
+/// replaced only when at least one part was valid; returns whether it was.
 bool parse_pair(const std::string& value, gowa::BindingPair& out, const std::string& entry) {
     gowa::BindingPair pair{};
     size_t count = 0;
@@ -56,26 +76,46 @@ bool parse_pair(const std::string& value, gowa::BindingPair& out, const std::str
     out = pair;
     return true;
 }
+/// Digital stick axis from two keys: full deflection toward the pressed key,
+/// centre when both are pressed, and @p previous (the controller value) when
+/// neither is, so keys only override the controller while in use.
 uint8_t key_axis(Uint8 neg, Uint8 pos, uint8_t previous) {
     if (!neg && !pos) return previous;
     return neg == pos ? 128 : (neg ? 0 : 255);
 }
+/// Active mapping. Written by gowa_input_start() before polling begins, read afterwards.
 gowa::InputMapping mapping;
+/// Guards `current`, `pad_state` and the rumble request fields, which cross
+/// between the window thread and guest threads.
 std::mutex state_mutex;
+/// Sample handed to the guest for port 0 (connected, no buttons, sticks centred).
 CellPadHostSample current = {1, 0, 128, 128, 128, 128, 0, 0};
+/// Open SDL controller used as port 0, or null. Window thread only.
 SDL_GameController* controller = nullptr;
+/// Whether SDL_INIT_GAMECONTROLLER was initialized by gowa_input_start().
 bool controller_subsystem = false;
+/// Set by set_rumble() when the guest changes motor values; consumed by gowa_input_tick().
 bool rumble_pending = false;
+/// False when GOWA_RUMBLE=0.
 bool rumble_enabled = true;
+/// Last motor values requested by the guest (small motor is on/off on a DualShock 3).
 uint8_t rumble_small = 0, rumble_large = 0;
+/// True while the overlay menu owns input; see gowa_input_set_captured().
 std::atomic<bool> captured{false};
+/// Buttons masked from the guest until physically released (after capture
+/// ends or the menu combo is used). Window thread only.
 uint16_t suppressed = 0;
+/// Raw controller state for the overlay, published under state_mutex.
 gowa::PadState pad_state;
 
+/// cellPad host read callback (guest threads). Port 0 gets the latest sample;
+/// every other port reports disconnected.
 void read_sample(unsigned port, CellPadHostSample* out) {
     std::lock_guard<std::mutex> lock(state_mutex);
     *out = port == 0 ? current : CellPadHostSample{0, 0, 128, 128, 128, 128, 0, 0};
 }
+/// cellPad host rumble callback (guest threads, from cellPadSetActDirect).
+/// Only records the request; the window thread applies it on its next tick.
 void set_rumble(unsigned port, uint8_t small, uint8_t large) {
     if (port != 0) return;
     std::lock_guard<std::mutex> lock(state_mutex);
@@ -83,6 +123,8 @@ void set_rumble(unsigned port, uint8_t small, uint8_t large) {
 }
 }
 
+/// Default controller layout (SDL names follow the Xbox layout: A = cross,
+/// B = circle, X = square, Y = triangle) plus the default_keys bindings.
 gowa::InputMapping::InputMapping()
     : buttons{SDL_CONTROLLER_BUTTON_BACK, SDL_CONTROLLER_BUTTON_LEFTSTICK,
               SDL_CONTROLLER_BUTTON_RIGHTSTICK, SDL_CONTROLLER_BUTTON_START,
@@ -95,6 +137,7 @@ gowa::InputMapping::InputMapping()
     for (size_t i = 0; i < keys.size(); ++i) parse_pair(default_keys[i], keys[i], default_keys[i]);
 }
 
+/// Applies the keyboard list first, then the controller list; see input.h.
 void gowa::InputMapping::configure(const char* key_map, const char* pad_map) {
     for (int kind = 0; kind < 2; ++kind) {
         const char* text = kind ? pad_map : key_map;
@@ -123,6 +166,7 @@ void gowa::InputMapping::configure(const char* key_map, const char* pad_map) {
     }
 }
 
+/// True if either keyboard/mouse binding of @p slot is down; see input.h.
 bool gowa::InputMapping::held(size_t slot, const Uint8* k, Uint32 mouse) const {
     for (const Binding& b : keys[slot]) {
         if (b.kind == BindingKind::key && k && k[b.code]) return true;
@@ -131,6 +175,10 @@ bool gowa::InputMapping::held(size_t slot, const Uint8* k, Uint32 mouse) const {
     return false;
 }
 
+/// Builds the guest pad sample from keyboard, mouse and controller state; see input.h.
+/// Without evade_mod, WASD drives the left stick and the arrows the right
+/// stick; with evade_mod held, WASD drives the right stick and the left stick
+/// keeps the controller value.
 CellPadHostSample gowa::InputMapping::sample(const Uint8* k, Uint32 mouse, const Uint8* b,
                                             const Sint16* a, bool focused) const {
     CellPadHostSample s{1, 0, 128, 128, 128, 128, 0, 0};
@@ -168,6 +216,7 @@ CellPadHostSample gowa::InputMapping::sample(const Uint8* k, Uint32 mouse, const
     return s;
 }
 
+/// Display name of a binding; see input.h.
 std::string gowa::binding_name(const Binding& b) {
     if (b.kind == BindingKind::mouse && b.code >= 1 && b.code <= int(std::size(mouse_names)))
         return mouse_names[b.code - 1];
@@ -175,8 +224,10 @@ std::string gowa::binding_name(const Binding& b) {
     return "";
 }
 
+/// Installs read_sample/set_rumble as the cellPad host adapter; see input.h.
 void gowa_input_register() { cellPad_set_host_adapter(read_sample, set_rumble); }
 
+/// Reads the input environment variables and opens the controller subsystem; see input.h.
 void gowa_input_start() {
     mapping.configure(getenv("GOWA_KEY_MAP"), getenv("GOWA_PAD_MAP"));
     const char* dz = getenv("GOWA_STICK_DEADZONE");
@@ -191,6 +242,12 @@ void gowa_input_start() {
                     "Space=Cross, F=Circle, Escape/Enter=Start, Tab=Select\n");
 }
 
+/// One input poll on the window thread; see input.h.
+/// R3 + left trigger past half travel is the overlay menu combo, so the guest
+/// never sees it. Rumble is (re)sent on a new guest request and every tick
+/// while unfocused (which sends zero); each command lasts 100 ms, so a motor
+/// stops on its own if requests stop. The small motor is on/off: any nonzero
+/// value drives it at full strength.
 void gowa_input_tick() {
     if (controller && !SDL_GameControllerGetAttached(controller)) {
         SDL_GameControllerClose(controller);
@@ -252,6 +309,7 @@ void gowa_input_tick() {
     }
 }
 
+/// Releases the controller and resets the published sample; see input.h.
 void gowa_input_stop() {
     if (controller) {
         SDL_GameControllerRumble(controller, 0, 0, 0);
@@ -264,13 +322,16 @@ void gowa_input_stop() {
     current = {1, 0, 128, 128, 128, 128, 0, 0};
 }
 
+/// Sets whether the overlay menu owns input; see input.h.
 void gowa_input_set_captured(bool value) { captured.store(value, std::memory_order_relaxed); }
 
+/// Returns a copy of the raw controller state; see input.h.
 gowa::PadState gowa_input_pad_state() {
     std::lock_guard<std::mutex> lock(state_mutex);
     return pad_state;
 }
 
+/// Lists every slot with its keyboard/mouse and controller bindings; see input.h.
 std::vector<gowa::BindingInfo> gowa_input_bindings() {
     std::vector<gowa::BindingInfo> out;
     for (size_t i = 0; i < mapping.keys.size(); ++i) {

@@ -1,4 +1,27 @@
 #!/usr/bin/env bash
+# Diagnose hangs: run the game under gdb for a fixed time, then dump the
+# backtrace of every thread and print a condensed per-thread summary.
+#
+# Usage: hang_dump.sh [SECONDS [DEPTH]]
+#   SECONDS  how long the game runs before it is interrupted (default 15)
+#   DEPTH    frames per thread in the backtrace (default 30)
+#
+# Input:  the built executable (build.sh) and the extracted game files.
+# Output (analysis/):
+#   hang_bt.txt    full gdb output with all backtraces
+#   hang_run.log   the game's stdout/stderr
+# The summary from summarize_bt.py is printed on stdout.
+#
+# Signals the runtime uses internally (SIGSEGV, SIGBUS, SIGUSR1/2, SIGPIPE,
+# SIGALRM) are passed through silently. After SECONDS a background job sends
+# SIGINT to the process (matched by its 15-character kernel name
+# "GowAscensionRec"), gdb stops, dumps the stacks and kills the game.
+#
+# Environment:
+#   GDB_EXTRA  extra gdb commands run after the backtrace (optional).
+#   PRESET and the VFS variables (see common.sh), and the runtime tuning
+#   variables documented in run.sh, with the same defaults (except that
+#   PS3RECOMP_VK_WINDOW is not set here).
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 seconds="${1:-15}"

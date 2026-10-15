@@ -1,4 +1,14 @@
 #!/usr/bin/env bash
+# Start the graphical launcher (launcher/gowa_launcher.py).
+#
+# Usage: launcher.sh [launcher options...]   (arguments go to the launcher)
+#
+# Uses the Python of the virtualenv in ../.venv, or python3 from PATH if that
+# interpreter is missing. If that Python cannot import tkinter and a Tk 8.6
+# unpacked locally under scratch/pc-deps/usr/lib exists, that copy is added to
+# LD_LIBRARY_PATH and TK_LIBRARY before starting.
+#
+# Environment: GOWA_PYTHON  Python interpreter to use instead of ../.venv.
 set -euo pipefail
 port_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 workspace_dir="$(dirname "$port_dir")"

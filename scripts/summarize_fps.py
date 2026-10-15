@@ -1,5 +1,21 @@
 #!/usr/bin/env python3
-"""Report guest flips separately from host presents; never count boot redraws as FPS."""
+"""Report guest flips separately from host presents; never count boot redraws as FPS.
+
+Input: CSV files written by an executable built with the frame probe
+(relink_perf_snapshot.py --probe) and run with GOWA_FRAME_CSV=<file>; one row
+per host present with at least the columns elapsed_ms, guest_flip,
+submit_wait_ms and present_ms. A guest frame is a row whose guest_flip counter
+is positive and differs from the previous counted row.
+
+For each time window (--window label:start_s:end_s, repeatable; default
+intro:20:33 and menu:140:160) prints, as JSON: host presents, guest frames,
+guest FPS, median/p95/p99 guest frame time, frames over 100 ms, GPU submit
+wait and present time per guest frame, and whether the capture covered the
+whole window.
+
+Usage example:
+    python3 scripts/summarize_fps.py scratch/frames.csv --window gameplay:60:120
+"""
 import argparse
 import csv
 import json
@@ -8,6 +24,7 @@ import statistics
 
 
 def percentile(values, p):
+    """Return the ``p`` quantile (0..1) of ``values`` with linear interpolation."""
     values = sorted(values)
     index = (len(values) - 1) * p
     lo = int(index)
@@ -15,6 +32,19 @@ def percentile(values, p):
 
 
 def summarize(path, windows):
+    """Compute the per-window statistics of one frame CSV.
+
+    Args:
+        path: Path of the CSV file.
+        windows: list of (label, start seconds, end seconds) tuples.
+
+    Returns:
+        A dict with the CSV path, the last elapsed time in seconds and a
+        ``stages`` list holding one statistics dict per window.
+
+    Raises:
+        ValueError: if the CSV is empty or has no guest_flip column.
+    """
     rows = [{k: float(v) for k, v in row.items()} for row in csv.DictReader(path.open())]
     if not rows or 'guest_flip' not in rows[0]:
         raise ValueError('Need an instrumented CSV with guest_flip counter')
@@ -44,6 +74,7 @@ def summarize(path, windows):
 
 
 def main():
+    """Parse arguments and print the summaries of all CSVs as a JSON list."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('csv', type=Path, nargs='+')
     parser.add_argument('--window', action='append', help='label:start_seconds:end_seconds')

@@ -1,4 +1,21 @@
 #!/usr/bin/env bash
+# Lift (statically recompile) the game's PPU code to C/C++.
+#
+# Usage: lift.sh [ELF]           (default: game/EBOOT.ELF)
+#
+# Steps, all with ps3recomp tools:
+#   1. ppu_loader     discovers functions and imports -> out/*.functions.json,
+#                     out/*.imports.json, report in out/loader.txt
+#   2. ppu_lifter     deletes the previous recompiled/ppu_recomp* sources and
+#                     regenerates them, emitting HLE stubs for the imports
+#                     (one job per CPU core)
+#   3. gen_hle_nids   writes recompiled/ppu_hle_nids.cpp, the NID table of
+#                     every HLE module
+#
+# Input:  decrypted PPU ELF (decrypt_eboot.sh).
+# Output: out/ and recompiled/. Rebuild afterwards with build.sh.
+#
+# Environment: PS3RECOMP (see common.sh).
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 elf="${1:-$ELF}"

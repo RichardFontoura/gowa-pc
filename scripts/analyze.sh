@@ -1,4 +1,23 @@
 #!/usr/bin/env bash
+# Static analysis of the decrypted game ELF, run before lifting.
+#
+# Usage: analyze.sh [ELF]        (default: game/EBOOT.ELF)
+#
+# Input:  the decrypted PPU ELF produced by decrypt_eboot.sh.
+# Output (analysis/):
+#   elf.json             headers, sections and segments (ps3recomp elf_parser)
+#   imports_named.json   imported library functions with resolved names
+#   spu_images/          embedded SPU ELF images, plus the SPURS policy module
+#                        below wrapped as pm_wwsjob_at_007A7B00.elf
+#   spu_images.txt       extract_spu_images report
+#   pm_wwsjob.bin        raw bytes of the Wws_Job policy module
+#
+# The policy module is stored raw (not as an SPU ELF) in the executable. It is
+# cut from a fixed file offset of the patch 1.12 ELF (0x3000 bytes at 0x797B00,
+# virtual address 0x007A7B00) and wrapped into an SPU ELF loaded and entered at
+# local-store address 0xA00 so lift_spu.sh can lift it like the other images.
+#
+# Environment: PS3RECOMP (see common.sh).
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 elf="${1:-$ELF}"

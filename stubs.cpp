@@ -16,6 +16,11 @@
 #include "ps3emu/ps3types.h"
 #include "ps3emu/error_codes.h"
 
+/// Game-specific hook points the runner (main.cpp) links against. This title
+/// currently needs no lifted system PRX, NID overrides or code patches, so the
+/// only definition is the empty PRX loader; the commented examples below show
+/// where such overrides would go.
+
 /* ---------------------------------------------------------------------------
  * PRX loading
  *
@@ -26,6 +31,9 @@
  * answers those modules instead.
  * -----------------------------------------------------------------------*/
 
+/// Called once by main() after the lifted function table is registered and
+/// before the HLE modules are initialized. Intentionally empty: every system
+/// module this title imports is served by the ps3recomp HLE libraries.
 extern "C" void ps3_load_prx_modules(void)
 {
 }

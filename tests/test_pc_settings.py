@@ -1,3 +1,14 @@
+"""Tests for loading, saving and validating ``settings.json`` (``launcher/settings.py``).
+
+Covers the save/load round trip, the environment passed to the game, atomic
+saves, rejection of invalid data without touching the file on disk, and reading
+the legacy ``gowa-recomp`` config until the first save. No display, game build
+or game assets are needed.
+
+Run from the repository root (also run by ``scripts/test_pc.sh``)::
+
+    python -m unittest discover -s tests -p 'test_pc_*.py'
+"""
 import copy
 import json
 from pathlib import Path
@@ -11,7 +22,13 @@ import settings
 
 
 class SettingsTests(unittest.TestCase):
+    """Persistence and validation of launcher settings."""
     def test_roundtrip_and_environment(self):
+        """Saved settings load back unchanged and produce the expected game environment.
+
+        The launcher's key and pad maps replace inherited ones, while an inherited
+        ``GCM_FLIP_MIN_MS`` is kept; default settings export an empty key map.
+        """
         data = copy.deepcopy(settings.DEFAULTS)
         data['controls']['key'] = {'cross': 'V', 'circle': 'Escape'}
         data['controls']['pad'] = {'cross': 'b', 'circle': 'a'}
@@ -30,6 +47,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.game_environment(settings.DEFAULTS, {}, ini={})['GOWA_KEY_MAP'], '')
 
     def test_interrupted_save_preserves_previous(self):
+        """A save that fails at the final rename keeps the previous file and leaves no temporary files."""
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'settings.json'
             settings.save(settings.DEFAULTS, path)
@@ -41,6 +59,7 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(list(Path(folder).iterdir()), [path])
 
     def test_rejects_invalid_settings_without_destroying_file(self):
+        """Invalid settings and unknown key names raise ``ValueError``; a corrupt JSON file raises and is left intact."""
         for change in ({'version': 3}, {'diagnostics': {'flip_min_ms': -1}}, {'keyboard': 'false'},
                        {'controls': {'pad': {'l2': 'x'}}}, {'controls': {'key': {'cross': 'V,start=Q'}}},
                        {'controls': {'key': {'cross': 'Insert'}}}):
@@ -56,6 +75,7 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(path.read_text(), '{broken')
 
     def test_reads_legacy_config_until_first_save(self):
+        """The legacy config file is read while the current one is missing and ignored once it is saved."""
         with tempfile.TemporaryDirectory() as folder:
             current = Path(folder) / 'gowa-pc' / 'settings.json'
             legacy = Path(folder) / 'gowa-recomp' / 'settings.json'
