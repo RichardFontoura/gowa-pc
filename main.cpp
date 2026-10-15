@@ -149,6 +149,7 @@ extern "C" int  rsx_null_backend_pump_messages(void);
 #define STACK_TOP     0x0FF00000u      /* main-thread stack, below the 0x10000000 segment */
 #define WINDOW_WIDTH  1280
 #define WINDOW_HEIGHT 720
+#define VBLANK_PERIOD_US 16683ull
 
 /* ---------------------------------------------------------------------------
  * Frame clock
@@ -194,33 +195,25 @@ static DWORD WINAPI frame_clock(LPVOID)
 #endif
 
     unsigned  last_flip = 0;
-    ULONGLONG next_tick = GetTickCount64();
+    ULONGLONG next_tick_us = GetTickCount64() * 1000ull;
 
     for (;;) {
         Sleep(4);
-        ULONGLONG now = GetTickCount64();
+        ULONGLONG now_us = GetTickCount64() * 1000ull;
 
         int fired = 0;
-        while ((long long)(now - next_tick) >= 0 && fired < 240) {
+        while ((long long)(now_us - next_tick_us) >= 0 && fired < 240) {
             cellGcmTickVBlank();
             cellGcmTickFlip();
-            /* Present a pending flip BEFORE draining any further. The flip
-             * fires at a get==put frame boundary on the guest thread, so the
-             * batch held right now is exactly the completed frame; presenting
-             * after the drain races the guest's next-frame writes and shows a
-             * mixed one. */
             if (rsx_ok && cellGcm_take_flip_pending()) {
                 present_guest_frame();
                 last_flip = cellGcm_flip_request_count();
             }
-            /* Drain the FIFO every tick. This is what writes the RSX sync-fence
-             * labels the game's per-frame logic blocks on, so it has to keep
-             * advancing at 60 Hz even while present() throttles. */
             if (rsx_ok) cellGcm_rsx_process_fifo();
-            next_tick += 16;             /* ~60 Hz */
+            next_tick_us += VBLANK_PERIOD_US;
             fired++;
         }
-        if (fired >= 240) next_tick = now;   /* fell too far behind -- resync */
+        if (fired >= 240) next_tick_us = now_us;
 
         /* Drain at the outer cadence too, not only on the 16 ms tick: titles
          * fence every render pass on a label the drain writes, and one wave of
