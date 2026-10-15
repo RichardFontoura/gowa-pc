@@ -38,10 +38,12 @@
  * names over pthreads and mmap, so the call sites below are written once. */
 #include "win32_compat.h"
 
+#include <chrono>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <thread>
 #ifndef _WIN32
 #include <sys/mman.h>
 #endif
@@ -152,6 +154,7 @@ extern "C" int  rsx_null_backend_pump_messages(void);
 #define WINDOW_WIDTH  1280
 #define WINDOW_HEIGHT 720
 #define VBLANK_PERIOD_US 16683ull
+#define FRAME_CLOCK_SLOW_US 4000ull
 
 /* ---------------------------------------------------------------------------
  * Frame clock
@@ -208,6 +211,18 @@ static void configure_shader_cache(void)
 }
 #endif
 
+static unsigned frame_clock_poll_us(void)
+{
+    const char* e = getenv("GOWA_RSX_POLL_US");
+    return e && *e ? (unsigned)strtoul(e, NULL, 10) : 250u;
+}
+
+static unsigned long long frame_clock_now_us(void)
+{
+    return (unsigned long long)std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 static DWORD WINAPI frame_clock(LPVOID)
 {
     const char* title = getenv("PS3_TITLE");
@@ -228,9 +243,12 @@ static DWORD WINAPI frame_clock(LPVOID)
 
     unsigned  last_flip = 0;
     ULONGLONG next_tick_us = GetTickCount64() * 1000ull;
+    const unsigned poll_us = frame_clock_poll_us();
+    unsigned long long slow_due_us = 0;
 
     for (;;) {
-        Sleep(4);
+        if (poll_us) std::this_thread::sleep_for(std::chrono::microseconds(poll_us));
+        else Sleep(4);
         ULONGLONG now_us = GetTickCount64() * 1000ull;
 
         int fired = 0;
@@ -247,16 +265,15 @@ static DWORD WINAPI frame_clock(LPVOID)
         }
         if (fired >= 240) next_tick_us = now_us;
 
-        /* Drain at the outer cadence too, not only on the 16 ms tick: titles
-         * fence every render pass on a label the drain writes, and one wave of
-         * those at 16 ms apiece paces the guest into single-figure frame rates.
-         * The real RSX writes them in microseconds. */
         if (rsx_ok) {
             if (cellGcm_take_flip_pending()) {
                 present_guest_frame();
                 last_flip = cellGcm_flip_request_count();
             }
             cellGcm_rsx_process_fifo();
+            const unsigned long long t_us = frame_clock_now_us();
+            if (poll_us && t_us < slow_due_us) continue;
+            slow_due_us = t_us + FRAME_CLOCK_SLOW_US;
 
             if (rsx_backend_pump() != 0) {
 #ifdef PS3RECOMP_RSX_VULKAN
