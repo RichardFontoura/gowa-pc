@@ -21,7 +21,7 @@ the in-game menu and the launcher.
 >   `recompiled/`, `spu/`) or anything else produced from the game. They are derived from copyrighted
 >   material.
 > - Requests for game files, keys or ready-made builds are not answered and are removed from the issues
->   and the [Discord](https://discord.com/channels/1560606166751645718/1560619851133755442/1560624577611169793).
+>   and the [Discord](https://discord.gg/HCHyR3GYWm).
 > - This project does not help to run pirated copies and is not a way to play the game without buying
 >   it.
 >
