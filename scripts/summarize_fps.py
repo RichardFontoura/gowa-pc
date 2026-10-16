@@ -13,14 +13,30 @@ guest FPS, median/p95/p99 guest frame time, frames over 100 ms, GPU submit
 wait and present time per guest frame, and whether the capture covered the
 whole window.
 
+Columns written by the Vulkan backend's RSX_FRAME_CSV (draws, submits,
+shader_ms, gpu_ms) are summed over the window and reported per guest frame;
+gpu_ms is only non-zero when the game ran with RSX_VK_GPU_TIMING=1. The
+guest_flip counter delta over the window is reported too, so flips that never
+reached a host present are visible (guest_flip_delta > guest_frames).
+
+--scene NAME (repeatable) adds the fixed windows of tests/scene_bench.py, given
+in harness seconds; --offset S is subtracted from them to obtain CSV seconds
+(elapsed_ms starts when the backend initialises, 0.24-0.39 s after the process
+in the measured runs).
+
 Usage example:
     python3 scripts/summarize_fps.py scratch/frames.csv --window gameplay:60:120
+    python3 scripts/summarize_fps.py runs/*/frames.csv --scene menu3d --scene gameplay --offset 0.39 --table
 """
 import argparse
 import csv
 import json
 from pathlib import Path
 import statistics
+
+SCENES = {'menu3d': (50, 90), 'gameplay': (700, 800), 'gameplay_early': (690, 720),
+          'gameplay_late': (755, 800)}
+PER_GUEST = ('submit_wait_ms', 'present_ms', 'draws', 'submits', 'shader_ms', 'gpu_ms')
 
 
 def percentile(values, p):
@@ -65,10 +81,13 @@ def summarize(path, windows):
                       complete=rows[-1]['elapsed_ms'] >= end * 1000)
         if times:
             result.update(frame_ms_median=statistics.median(times), frame_ms_p95=percentile(times, .95),
-                          frame_ms_p99=percentile(times, .99), stutters_over_100ms=sum(t > 100 for t in times))
+                          frame_ms_p99=percentile(times, .99), frame_ms_max=max(times),
+                          stutters_over_100ms=sum(t > 100 for t in times))
         if samples:
-            result.update(submit_wait_ms_per_guest=sum(r['submit_wait_ms'] for r in samples) / max(1, len(frames)),
-                          present_ms_per_guest=sum(r['present_ms'] for r in samples) / max(1, len(frames)))
+            result.update(guest_flip_delta=samples[-1]['guest_flip'] - samples[0]['guest_flip'] + 1)
+            for key in PER_GUEST:
+                if key in samples[0]:
+                    result[f'{key}_per_guest'] = sum(r[key] for r in samples) / max(1, len(frames))
         results.append(result)
     return dict(csv=str(path), last_elapsed_s=rows[-1]['elapsed_ms'] / 1000, stages=results)
 
@@ -78,10 +97,28 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('csv', type=Path, nargs='+')
     parser.add_argument('--window', action='append', help='label:start_seconds:end_seconds')
+    parser.add_argument('--scene', action='append', choices=sorted(SCENES), help='fixed harness window')
+    parser.add_argument('--offset', type=float, default=0.0, help='harness seconds minus CSV seconds')
+    parser.add_argument('--table', action='store_true', help='print a Markdown table instead of JSON')
     args = parser.parse_args()
-    windows = [x.split(':') for x in (args.window or ['intro:20:33', 'menu:140:160'])]
+    windows = [x.split(':') for x in (args.window or ([] if args.scene else ['intro:20:33', 'menu:140:160']))]
     windows = [(name, float(start), float(end)) for name, start, end in windows]
-    print(json.dumps([summarize(p, windows) for p in args.csv], indent=2))
+    windows += [(name, SCENES[name][0] - args.offset, SCENES[name][1] - args.offset) for name in args.scene or []]
+    results = [summarize(p, windows) for p in args.csv]
+    if not args.table:
+        print(json.dumps(results, indent=2))
+        return
+    print('| run | window | s | guest frames | FPS | median | p95 | p99 | max | >100 ms | wait/frame | draws | gpu_ms | complete |')
+    print('|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|')
+    for r in results:
+        run = Path(r['csv']).parent.name
+        for st in r['stages']:
+            g = st.get
+            print(f"| {run} | {st['stage']} | {st['start_s']:.1f}-{st['end_s']:.1f} | {st['guest_frames']} | "
+                  f"{st['guest_fps']:.2f} | {g('frame_ms_median', 0):.1f} | {g('frame_ms_p95', 0):.1f} | "
+                  f"{g('frame_ms_p99', 0):.1f} | {g('frame_ms_max', 0):.0f} | {g('stutters_over_100ms', 0)} | "
+                  f"{g('submit_wait_ms_per_guest', 0):.1f} | {g('draws_per_guest', 0):.0f} | "
+                  f"{g('gpu_ms_per_guest', 0):.1f} | {'yes' if st['complete'] else 'NO'} |")
 
 
 if __name__ == '__main__':
