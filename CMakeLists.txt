@@ -1,3 +1,7 @@
+# Based on ps3recomp project templates.
+# Original portions: Copyright (c) 2026 Ned Heller / sp00nznet, MIT.
+# Modified for GoWA-PC; see THIRD_PARTY_NOTICES.md and LICENSES/ps3recomp-MIT.txt.
+
 cmake_minimum_required(VERSION 3.20)
 project(GowAscensionRecomp
     VERSION 0.1.0

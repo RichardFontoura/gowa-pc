@@ -3,7 +3,7 @@
 #
 # Usage: run.sh [game options...]   (extra arguments go to the executable)
 #
-# Input:  the built executable (build.sh), game/EBOOT.ELF (decrypt_eboot.sh),
+# Input:  the built executable (build.sh), the user-supplied game/EBOOT.ELF,
 #         game/disc/ and, if present, game/update/ mounted as the virtual file
 #         system by setup_vfs_env (see common.sh).
 # Output: the game's own stdout/stderr. The executable, the resolved ELF and

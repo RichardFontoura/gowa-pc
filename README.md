@@ -50,7 +50,7 @@ first level runs far too slowly to play.
 ## What works
 
 - **Static recompilation pipeline:** reads the disc image and the 1.12 update dumped from your own
-  copy, prepares the game executable from them and translates its PPU and SPU code, including the WWS
+  copy, accepts a user-supplied ELF and translates its PPU and SPU code, including the WWS
   job modules and the SPU code the game generates at run time.
 - **Graphics:** the ps3recomp RSX backend on Vulkan, with a persistent shader cache and optional
   background shader compilation.
@@ -65,7 +65,8 @@ first level runs far too slowly to play.
 - Linux x86-64 and a GPU with a Vulkan driver.
 - clang, CMake, Ninja, 7-Zip, Vulkan headers, SDL2, FFmpeg and Python 3 with Tk.
 - A legally owned copy of the game: an ISO dumped from your own BCUS98232 disc (version 1.00) and
-  the PKG of the 1.12 update. Nothing is downloaded and no game file is provided.
+  the PKG of the 1.12 update, plus a legally prepared ELF of the actual 1.12 game executable.
+  Nothing is downloaded and no game file is provided.
 
 **Build notes**
 - The translated SPU code is compiled with `-march=x86-64-v3` (AVX2/FMA) by default. On a CPU without
@@ -127,15 +128,22 @@ cd gowa-pc
 ```bash
 scripts/extract_update.sh /path/to/patch-1.12.pkg   # -> game/update
 scripts/extract_disc.sh /path/to/disc.iso           # -> game/disc (refuses incomplete ISOs)
-scripts/decrypt_eboot.sh                            # update (default) or disc -> game/EBOOT.ELF
 ```
 
 Instead of passing the paths, you can set `GOWA_DUMPS` to a folder that holds the ISO and the PKG.
 
+Supply a legally prepared ELF of the actual 1.12 game executable as `game/GOWA.update.ELF`,
+then create the input link used by the pipeline:
+
+```bash
+ln -s GOWA.update.ELF game/EBOOT.ELF
+```
+
 With the 1.12 update, `USRDIR/EBOOT.BIN` is only a small loader that starts `GOWA.SELF`, the real
-executable. `decrypt_eboot.sh` turns both into plain ELF files that the lifter can read, using only the
-files of your copy (no emulator involved). The game-specific data it needs is read from your own update
-files on every run and is never stored or shipped in this repository, so the step fails without them.
+game executable. The supplied ELF must correspond to that game executable, not the loader.
+The `GOWA.update.ELF` filename also lets the runner select the update's boot path automatically.
+The current source tree does not include a decryption tool or decryption constants. Keep the ELF
+and all generated files local. Existing installations with this ELF/link can continue to the next step.
 
 ### 3. Translate and build
 
@@ -277,5 +285,7 @@ Also used: [SDL2](https://github.com/libsdl-org/SDL), [FFmpeg](https://ffmpeg.or
 
 ## License
 
-GNU GPL v2 or later ([LICENSE](LICENSE)). Third-party components keep their own licenses: Dear ImGui
-(`third_party/imgui`) is MIT.
+Original GoWA-PC contributions are licensed under GNU GPL v2 or later ([LICENSE](LICENSE)).
+Third-party code retains its original license and copyright notices; this grant does not relicense
+third-party portions. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the ps3recomp templates,
+Dear ImGui, bundled fonts/stb components, and the provenance of the historical decryption tools.

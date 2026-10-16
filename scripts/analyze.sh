@@ -3,7 +3,7 @@
 #
 # Usage: analyze.sh [ELF]        (default: game/EBOOT.ELF)
 #
-# Input:  the decrypted PPU ELF produced by decrypt_eboot.sh.
+# Input:  the user-supplied PPU ELF (see README.md, "Prepare the game files").
 # Output (analysis/):
 #   elf.json             headers, sections and segments (ps3recomp elf_parser)
 #   imports_named.json   imported library functions with resolved names
@@ -21,7 +21,7 @@
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 elf="${1:-$ELF}"
-[[ -f "$elf" ]] || die "ELF decriptado não encontrado em $elf; rode decrypt_eboot.sh antes"
+[[ -f "$elf" ]] || die "ELF não encontrado em $elf; forneça o ELF conforme a seção Prepare the game files do README.md"
 
 mkdir -p "$ANALYSIS"
 tool elf_parser "$elf" --all > "$ANALYSIS/elf.json"

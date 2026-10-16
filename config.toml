@@ -1,3 +1,7 @@
+# Based on ps3recomp project templates.
+# Original portions: Copyright (c) 2026 Ned Heller / sp00nznet, MIT.
+# Modified for GoWA-PC; see THIRD_PARTY_NOTICES.md and LICENSES/ps3recomp-MIT.txt.
+
 # ps3recomp -- Game recompilation project configuration
 #
 # Copy this file to your project and adjust the paths and settings.

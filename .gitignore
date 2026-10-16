@@ -56,3 +56,12 @@ core.*
 /docs/
 *.md
 !/README.md
+
+# Local-only decryption helpers and constants; never publish these files.
+/scripts/unself.py
+/scripts/ps3_keys.py
+/scripts/find_klic.py
+/scripts/decrypt_eboot.sh
+
+# Ship attribution alongside the source.
+!/THIRD_PARTY_NOTICES.md

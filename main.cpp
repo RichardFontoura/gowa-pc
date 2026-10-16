@@ -1,4 +1,10 @@
 /*
+ * Based on ps3recomp project templates and bootstrap code.
+ * Original portions: Copyright (c) 2026 Ned Heller / sp00nznet, MIT.
+ * Modified for GoWA-PC; see THIRD_PARTY_NOTICES.md and LICENSES/ps3recomp-MIT.txt.
+ */
+
+/*
  * ps3recomp game project -- entry point template.
  *
  * This is the runner. It boots a lifted title through the toolkit's PPU

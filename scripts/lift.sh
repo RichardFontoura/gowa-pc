@@ -12,14 +12,14 @@
 #   3. gen_hle_nids   writes recompiled/ppu_hle_nids.cpp, the NID table of
 #                     every HLE module
 #
-# Input:  decrypted PPU ELF (decrypt_eboot.sh).
+# Input:  user-supplied PPU ELF (see README.md, "Prepare the game files").
 # Output: out/ and recompiled/. Rebuild afterwards with build.sh.
 #
 # Environment: PS3RECOMP (see common.sh).
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 elf="${1:-$ELF}"
-[[ -f "$elf" ]] || die "ELF decriptado não encontrado em $elf; rode decrypt_eboot.sh antes"
+[[ -f "$elf" ]] || die "ELF não encontrado em $elf; forneça o ELF conforme a seção Prepare the game files do README.md"
 stem="$(basename "${elf%.*}")"
 
 mkdir -p "$OUT" "$RECOMP"
