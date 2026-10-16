@@ -10,10 +10,23 @@ emulator and no interpreter in the main path. This repository holds the game-spe
 port: the pipeline that turns your dump into a native executable, the PC entry point, input, settings,
 the in-game menu and the launcher.
 
-> **No game files are included**: no executables, assets, translated code or keys. Everything is
-> generated locally from your own legally obtained copy of the game.
-> This project is not affiliated with Sony Interactive Entertainment or Santa Monica Studio.
-> God of War is a trademark of Sony Interactive Entertainment.
+> [!IMPORTANT]
+> **You must own an original copy of the game.** This repository contains no part of God of War:
+> Ascension: no executables, assets, translated code or game license keys, and it does not download
+> them. The port only works with files you dump yourself from a copy you legally own: the BCUS98232
+> Blu-ray disc and the 1.12 update obtained for it. Everything is generated locally from those files
+> and must stay on your machine.
+>
+> - Do not share the game files, the generated executable, the translated code (`out/`,
+>   `recompiled/`, `spu/`) or anything else produced from the game. They are derived from copyrighted
+>   material.
+> - Requests for game files, keys or ready-made builds are not answered and are removed from the issues
+>   and the [Discord](https://discord.com/channels/1560606166751645718/1560619851133755442/1560624577611169793).
+> - This project does not help to run pirated copies and is not a way to play the game without buying
+>   it.
+>
+> This project is not affiliated with or endorsed by Sony Interactive Entertainment or Santa Monica
+> Studio. God of War is a trademark of Sony Interactive Entertainment.
 
 ## Status
 
@@ -36,9 +49,9 @@ first level runs far too slowly to play.
 
 ## What works
 
-- **Static recompilation pipeline:** extraction of the disc ISO and the 1.12 patch, decryption of the
-  NPDRM executable (the license key is found and validated automatically), PPU and SPU lifting,
-  including the WWS job modules and the SPU code the game generates at run time.
+- **Static recompilation pipeline:** reads the disc image and the 1.12 update dumped from your own
+  copy, prepares the game executable from them and translates its PPU and SPU code, including the WWS
+  job modules and the SPU code the game generates at run time.
 - **Graphics:** the ps3recomp RSX backend on Vulkan, with a persistent shader cache and optional
   background shader compilation.
 - **Input:** keyboard, mouse and SDL2 gamepads at the same time on port 0, with two remappable keys per
@@ -51,10 +64,8 @@ first level runs far too slowly to play.
 
 - Linux x86-64 and a GPU with a Vulkan driver.
 - clang, CMake, Ninja, 7-Zip, Vulkan headers, SDL2, FFmpeg and Python 3 with Tk.
-- Your own copy of the game: the disc ISO (version 1.00) and the PKG of the 1.12 patch.
-- An external SELF/NPDRM decrypter with a `--decrypt <file>` command line that reads the KLIC from
-  standard input, and a C header with the public NPDRM constants `NP_OMAC_KEY_2` and `NP_KLIC_FREE`.
-  Neither is distributed here.
+- A legally owned copy of the game: an ISO dumped from your own BCUS98232 disc (version 1.00) and
+  the PKG of the 1.12 update. Nothing is downloaded and no game file is provided.
 
 **Build notes**
 - The translated SPU code is compiled with `-march=x86-64-v3` (AVX2/FMA) by default. On a CPU without
@@ -121,12 +132,10 @@ scripts/decrypt_eboot.sh                            # update (default) or disc -
 
 Instead of passing the paths, you can set `GOWA_DUMPS` to a folder that holds the ISO and the PKG.
 
-With the 1.12 patch, `USRDIR/EBOOT.BIN` is only a small loader that starts `GOWA.SELF`, the real
-executable. `decrypt_eboot.sh` finds the license key of `GOWA.SELF` inside the decrypted loader with
-`scripts/find_klic.py`, which validates every candidate against the CMAC of the NPD header, and decrypts
-both SELFs with `scripts/unself.py`, a native SELF/NPDRM decrypter (no emulator involved). The public
-SELF/NPDRM keys these executables need are in `scripts/ps3_keys.py`; the KLIC of `GOWA.SELF` is not
-stored, it is recovered from the loader on every run.
+With the 1.12 update, `USRDIR/EBOOT.BIN` is only a small loader that starts `GOWA.SELF`, the real
+executable. `decrypt_eboot.sh` turns both into plain ELF files that the lifter can read, using only the
+files of your copy (no emulator involved). The game-specific data it needs is read from your own update
+files on every run and is never stored or shipped in this repository, so the step fails without them.
 
 ### 3. Translate and build
 
