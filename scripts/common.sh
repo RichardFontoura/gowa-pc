@@ -13,12 +13,6 @@
 #                   virtualenv).
 #   GOWA_DUMPS      directory searched for the disc ISO and the update PKG
 #                   when extract_disc.sh / extract_update.sh get no argument.
-#   SELF_DECRYPTER  path to an external SELF/NPDRM decrypter executable that
-#                   accepts `--decrypt <file>`, reads the KLIC (hex, one line,
-#                   empty for none) from stdin and writes <file-stem>.elf next
-#                   to the input. Required by decrypt_eboot.sh.
-#   PS3_KEY_VAULT   path to a C header that defines the NP_OMAC_KEY_2 and
-#                   NP_KLIC_FREE byte arrays. Required by find_klic.py.
 #   PRESET          CMake preset whose build directory port_exe() looks in
 #                   (default: linux-vulkan).
 #   PS3_VFS_ROOT, PS3_HDD0_ROOT, PS3_HDD1_ROOT, PS3_BOOT_PATH, PS3_DEV_FLASH
@@ -31,10 +25,6 @@ PORT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # ps3recomp checkout (gowa-fixes branch) providing tools/*.py, the runtime
 # and the HLE libraries.
 PS3RECOMP="${PS3RECOMP:-$(dirname "$PORT_DIR")/ps3recomp}"
-# External SELF/NPDRM decrypter executable (see header above).
-SELF_DECRYPTER="${SELF_DECRYPTER:-}"
-# C header with the NP_OMAC_KEY_2 and NP_KLIC_FREE arrays (see header above).
-PS3_KEY_VAULT="${PS3_KEY_VAULT:-}"
 # Python interpreter with ps3recomp's requirements (see header above).
 PY="${GOWA_PYTHON:-python3}"
 # Optional directory with the game dumps (disc ISO and update PKG), never modified.

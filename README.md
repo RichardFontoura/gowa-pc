@@ -114,9 +114,6 @@ cd gowa-pc
 ### 2. Prepare the game files
 
 ```bash
-export SELF_DECRYPTER=/path/to/self-decrypter
-export PS3_KEY_VAULT=/path/to/keys.h
-
 scripts/extract_update.sh /path/to/patch-1.12.pkg   # -> game/update
 scripts/extract_disc.sh /path/to/disc.iso           # -> game/disc (refuses incomplete ISOs)
 scripts/decrypt_eboot.sh                            # update (default) or disc -> game/EBOOT.ELF
@@ -126,8 +123,10 @@ Instead of passing the paths, you can set `GOWA_DUMPS` to a folder that holds th
 
 With the 1.12 patch, `USRDIR/EBOOT.BIN` is only a small loader that starts `GOWA.SELF`, the real
 executable. `decrypt_eboot.sh` finds the license key of `GOWA.SELF` inside the decrypted loader with
-`scripts/find_klic.py`, which validates every candidate against the CMAC of the NPD header. No key is
-stored in the repository.
+`scripts/find_klic.py`, which validates every candidate against the CMAC of the NPD header, and decrypts
+both SELFs with `scripts/unself.py`, a native SELF/NPDRM decrypter (no emulator involved). The public
+SELF/NPDRM keys these executables need are in `scripts/ps3_keys.py`; the KLIC of `GOWA.SELF` is not
+stored, it is recovered from the loader on every run.
 
 ### 3. Translate and build
 
