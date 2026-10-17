@@ -12,6 +12,7 @@ Run from the repository root::
 
     python -m unittest discover -s tests -p 'test_launcher*.py'
 """
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -88,6 +89,25 @@ class RunLogTests(unittest.TestCase):
         self.assertIn('host-loader', [e['category'] for e in events])
         self.assertIn('hle', [e['category'] for e in events])
         self.assertEqual(json.loads((session.directory / 'summary.json').read_text())['exit_code'], 7)
+
+    def test_frame_csv_and_scene_marks_live_in_the_session(self):
+        (self.root / 'frames.csv').write_text('old run\n')
+        (self.root / 'build/linux-vulkan').mkdir(parents=True)
+        (self.root / 'build/linux-vulkan/GowAscensionRecomp').write_bytes(b'exe')
+        env = dict(os.environ, RSX_FRAME_CSV=str(self.root / 'frames.csv'))
+        env.pop('GOWA_SCENE_MARKS', None)
+        code = ("import os; open(os.environ['RSX_FRAME_CSV'], 'w').write('frame\\n'); "
+                "open(os.environ['GOWA_SCENE_MARKS'], 'w').write('mark\\n')")
+        session = self.start(code, env)
+        self.finish(session)
+        self.assertEqual((session.directory / 'frames.csv').read_text(), 'frame\n')
+        self.assertEqual((session.directory / 'marks.csv').read_text(), 'mark\n')
+        self.assertEqual((session.directory / 'previous_frames.csv').read_text(), 'old run\n')
+        self.assertTrue((self.root / 'frames.csv').is_symlink())
+        self.assertEqual((self.root / 'frames.csv').read_text(), 'frame\n')
+        meta = json.loads((session.directory / 'metadata.json').read_text())
+        self.assertEqual(meta['artifacts']['executable']['sha256'], hashlib.sha256(b'exe').hexdigest())
+        self.assertEqual(meta['environment_overrides']['GOWA_SCENE_MARKS'], str(session.directory / 'marks.csv'))
 
     def test_history_and_large_output_are_not_truncated(self):
         """An old ``last_run.log`` is archived and very long lines are stored in full.

@@ -482,8 +482,8 @@ class Launcher:
         self.check_duplicates()
         self.note(f, 'Nomes de tecla do SDL: letras, números, Space, Return, Tab, Escape, Left Shift, Left Ctrl, '
                      'Left Alt, F1–F12… Mouse: Mouse Left, Mouse Right, Mouse Middle, Mouse X1, Mouse X2.\n'
-                     f'{" e ".join(RESERVED_KEYS)} são reservadas: Insert abre o menu do jogo e F10 liga o '
-                     'contador de FPS.')
+                     f'{", ".join(RESERVED_KEYS)} são reservadas: Insert abre o menu do jogo, F10 liga o '
+                     'contador de FPS e F9 marca o início e o fim de uma cena para medir.')
         self.ttk.Button(f, text='Restaurar controles padrão', command=self.reset_controls).pack(anchor='w')
 
     def capture_click(self, event, var, title):
@@ -617,7 +617,7 @@ class Launcher:
             self.diag_vars[key] = cls(value=diagnostics[key])
         self.section(f, 'Medição')
         self.check(f, 'Gravar tempos de quadro em CSV (RSX_FRAME_CSV)', self.diag_vars['frame_csv'])
-        self.note(f, f'Arquivo: {GAME_INI.parent / "frames.csv"} (regravado a cada execução)')
+        self.note(f, f'Gravado na pasta de log de cada execução; {GAME_INI.parent / "frames.csv"} aponta para o mais recente. F9 no jogo grava marks.csv ao lado.')
         self.check(f, 'Medir a decodificação de vídeo (VDEC_PERF)', self.diag_vars['vdec_perf'])
         self.section(f, 'Texturas')
         self.check(f, 'Conversão de texturas na GPU (RSX_VK_TEXTURE_COMPUTE)', self.diag_vars['texture_compute'])

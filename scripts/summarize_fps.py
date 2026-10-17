@@ -92,19 +92,46 @@ def summarize(path, windows):
     return dict(csv=str(path), last_elapsed_s=rows[-1]['elapsed_ms'] / 1000, stages=results)
 
 
+def mark_windows(csv_path, marks_path):
+    rows = [{k: float(v) for k, v in row.items()} for row in csv.DictReader(csv_path.open())]
+    marks = [int(row['guest_flip']) for row in csv.DictReader(marks_path.open())]
+    if not rows or not marks:
+        return []
+    def at(flip):
+        for row in rows:
+            if row['guest_flip'] >= flip:
+                return row['elapsed_ms'] / 1000
+        return rows[-1]['elapsed_ms'] / 1000
+    windows = []
+    for i in range(0, len(marks), 2):
+        begin = at(marks[i])
+        end = at(marks[i + 1]) if i + 1 < len(marks) else rows[-1]['elapsed_ms'] / 1000
+        if end > begin:
+            windows.append((f'marca{i // 2 + 1}', begin, end))
+    return windows
+
+
 def main():
-    """Parse arguments and print the summaries of all CSVs as a JSON list."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('csv', type=Path, nargs='+')
     parser.add_argument('--window', action='append', help='label:start_seconds:end_seconds')
     parser.add_argument('--scene', action='append', choices=sorted(SCENES), help='fixed harness window')
     parser.add_argument('--offset', type=float, default=0.0, help='harness seconds minus CSV seconds')
     parser.add_argument('--table', action='store_true', help='print a Markdown table instead of JSON')
+    parser.add_argument('--marks', nargs='?', const='', default=None, metavar='MARKS_CSV',
+                        help='add one window per pair of F9 scene marks (default: marks.csv next to each CSV)')
     args = parser.parse_args()
-    windows = [x.split(':') for x in (args.window or ([] if args.scene else ['intro:20:33', 'menu:140:160']))]
+    defaults = [] if args.scene or args.marks is not None else ['intro:20:33', 'menu:140:160']
+    windows = [x.split(':') for x in (args.window or defaults)]
     windows = [(name, float(start), float(end)) for name, start, end in windows]
     windows += [(name, SCENES[name][0] - args.offset, SCENES[name][1] - args.offset) for name in args.scene or []]
-    results = [summarize(p, windows) for p in args.csv]
+    results = []
+    for p in args.csv:
+        extra = []
+        if args.marks is not None:
+            marks = Path(args.marks) if args.marks else p.parent / 'marks.csv'
+            extra = mark_windows(p, marks) if marks.exists() else []
+        results.append(summarize(p, windows + extra))
     if not args.table:
         print(json.dumps(results, indent=2))
         return

@@ -8,6 +8,7 @@
 #include <array>
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <mutex>
@@ -33,6 +34,7 @@ extern "C" uint64_t ps3recomp_vdec_now_ns(void);
 extern "C" uint32_t ps3recomp_vdec_pictures_in_last_second(uint64_t now_ns);
 /// Time of the last decoded picture, or 0 if none yet.
 extern "C" uint64_t ps3recomp_vdec_last_picture_ns(void);
+extern "C" uint32_t cellGcm_flip_request_count(void);
 
 namespace {
 /// Vulkan entry points the overlay calls directly, resolved through the
@@ -209,6 +211,7 @@ std::mutex settings_mutex;
 gowa::GameIni game_ini;
 Renderer renderer;
 Stats stats;
+unsigned scene_marks = 0;
 
 /// Monotonic clock in nanoseconds.
 uint64_t now_ns() {
@@ -737,7 +740,7 @@ void draw_controls_tab() {
         }
         ImGui::EndTable();
     }
-    ImGui::TextDisabled("Analógico esquerdo: WASD. Direito: setas. Reservadas: Insert (menu) e F10 (overlay).");
+    ImGui::TextDisabled("Analógico esquerdo: WASD. Direito: setas. Reservadas: Insert (menu), F10 (overlay) e F9 (marca de cena).");
     ImGui::TextDisabled("Controle: R3 + L2 abre e fecha este menu.");
 }
 
@@ -897,12 +900,36 @@ int on_record(VkCommandBuffer cmd, uint32_t image_index, void*) {
     return 1;
 }
 
-/// Backend hook, called for each SDL event while the backend pumps the window
-/// (frame clock thread). Returning nonzero consumes the event so the backend
-/// ignores it. F10 toggles the overlay (saved immediately unless the menu is
-/// open); Insert toggles the menu and Escape closes it; a fresh Escape press
-/// is always consumed so the backend never treats it as a quit request. While the menu is open, mouse and
-/// keyboard events are queued for feed_input() and keyboard events are consumed.
+std::string scene_marks_path() {
+    if (const char* path = std::getenv("GOWA_SCENE_MARKS"); path && *path) return path;
+    const char* csv = std::getenv("RSX_FRAME_CSV");
+    if (!csv || !*csv) return {};
+    const std::string frames(csv);
+    const size_t slash = frames.find_last_of('/');
+    return (slash == std::string::npos ? std::string() : frames.substr(0, slash + 1)) + "marks.csv";
+}
+
+void write_scene_mark() {
+    const uint32_t flip = cellGcm_flip_request_count();
+    const uint64_t ns = now_ns();
+    const std::string path = scene_marks_path();
+    if (path.empty()) {
+        std::fprintf(stderr, "[scene-mark] F9 ignored: set GOWA_SCENE_MARKS or RSX_FRAME_CSV\n");
+        return;
+    }
+    FILE* f = std::fopen(path.c_str(), "a");
+    if (!f) {
+        std::fprintf(stderr, "[scene-mark] cannot open %s\n", path.c_str());
+        return;
+    }
+    if (std::ftell(f) == 0) std::fputs("mark,monotonic_ns,guest_flip\n", f);
+    ++scene_marks;
+    std::fprintf(f, "%u,%llu,%u\n", scene_marks, static_cast<unsigned long long>(ns), flip);
+    std::fclose(f);
+    std::fprintf(stderr, "[scene-mark] %u guest_flip=%u %s\n", scene_marks, flip,
+                 scene_marks % 2 ? "start" : "end");
+}
+
 int on_event(const SDL_Event* e, void*) {
     if (e->type == SDL_WINDOWEVENT && e->window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
         window_width.store(e->window.data1);
@@ -920,6 +947,10 @@ int on_event(const SDL_Event* e, void*) {
             }
             overlay_visible.store(show, std::memory_order_relaxed);
             if (!menu) save_settings();
+            return 1;
+        }
+        if (key == SDLK_F9) {
+            write_scene_mark();
             return 1;
         }
         if (key == SDLK_INSERT || (key == SDLK_ESCAPE && menu)) {

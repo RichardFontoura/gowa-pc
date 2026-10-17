@@ -20,6 +20,7 @@ its Tk timer; nothing here uses threads.
 import codecs
 import collections
 import datetime
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -43,13 +44,12 @@ RULES = (
     ('error', 'runtime', re.compile(r'\b(?:fatal|error|failed|segmentation fault|assertion failed|SIGSEGV|SIGABRT)\b', re.I)),
     ('warning', 'runtime', re.compile(r'\b(?:warning|unimplemented|unsupported|stub)\b', re.I)),
 )
-# Environment variables copied into metadata.json when present.
 ENV_KEYS = ('PRESET', 'PS3_VFS_ROOT', 'PS3_HDD0_ROOT', 'PS3_HDD1_ROOT', 'PS3_BOOT_PATH',
             'PS3_DEV_FLASH', 'PS3_HLE_UNRESOLVED', 'SPU_INTERP_UNLIFTED', 'SPU_SMC_STATS',
             'SPURS_KERN_THREADS', 'SPURS_KERN_PARALLEL', 'SPURS_KERN_BUSY_RERUN',
             'GCM_FLIP_MIN_MS', 'GCM_FLIP_PACE_WINDOW', 'GCM_SEMA_ACQUIRE',
             'PS3RECOMP_VK_GUEST_PROGRAMS', 'RSX_FRAME_CSV', 'GOWA_GAME_INI',
-            'GOWA_SHADER_CACHE', 'GOWA_ASYNC_SHADERS', 'GOWA_SHADER_WARMUP')
+            'GOWA_SHADER_CACHE', 'GOWA_ASYNC_SHADERS', 'GOWA_SHADER_WARMUP', 'GOWA_SCENE_MARKS')
 # The "[<UTC time>] [+<elapsed>s] " prefix that write_line() puts on session.log lines.
 PREFIX = re.compile(r'^\[\d{4}-\d\d-\d\dT[^\]]+\] \[\+[^\]]+\] ')
 
@@ -69,6 +69,30 @@ def classify(line):
         if pattern.search(line):
             return level, category
     return None
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for block in iter(lambda: f.read(1 << 20), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def session_environment(env, config, directory):
+    env = dict(env)
+    env.setdefault('GOWA_SCENE_MARKS', str(directory / 'marks.csv'))
+    if env.get('RSX_FRAME_CSV'):
+        frames = directory / 'frames.csv'
+        shared = Path(config) / 'frames.csv'
+        if Path(env['RSX_FRAME_CSV']) == shared:
+            if shared.exists() and not shared.is_symlink():
+                shared.rename(directory / 'previous_frames.csv')
+            link = directory / 'frames-link'
+            link.symlink_to(frames.resolve())
+            os.replace(link, shared)
+            env['RSX_FRAME_CSV'] = str(frames)
+    return env
 
 
 def revision(path):
@@ -99,30 +123,6 @@ class RunLog:
     """
 
     def __init__(self, config, port, command, env, messages=()):
-        """Create the run directory, open the log files and start the game.
-
-        Side effects: creates ``<config>/logs/<stamp>-<id>/``; moves a
-        regular-file ``<config>/last_run.log`` into it as
-        ``previous_last_run.log`` and replaces ``last_run.log`` with a
-        symlink to the new ``session.log``; writes ``metadata.json``; and
-        starts ``command`` in a new session (its own process group) with
-        ``cwd=port``, ``env`` and stdout/stderr redirected into ``raw.log``.
-
-        NID lines of the output are annotated with the importing library
-        taken from ``<port>/out/EBOOT.imports.json`` when that file exists.
-
-        Args:
-            config: Launcher configuration directory.
-            port: Root of the port repository; also the working directory.
-            command: argv of the game command.
-            env: Complete environment for the game process.
-            messages: Extra lines recorded as ``[launcher:launcher]`` notes
-                before the process starts.
-
-        Raises:
-            Exception: Anything raised while setting up or starting the
-                process is re-raised after the open files are closed.
-        """
         self.started = self.last_output = self.last_notice = time.monotonic()
         self.counts = collections.Counter()
         self.imports = {}
@@ -143,6 +143,7 @@ class RunLog:
         stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
         self.directory = Path(config) / 'logs' / f'{stamp}-{uuid.uuid4().hex[:8]}'
         self.directory.mkdir(parents=True)
+        env = session_environment(env, config, self.directory)
         try:
             self.log = self._open('session.log', 'w', encoding='utf-8', buffering=1)
             self.events = self._open('events.jsonl', 'w', encoding='utf-8', buffering=1)
@@ -167,7 +168,8 @@ class RunLog:
                                ('elf', Path(port) / 'game/EBOOT.ELF')):
                 try:
                     stat = path.stat()
-                    self.metadata['artifacts'][name] = {'path': str(path.resolve()), 'bytes': stat.st_size, 'mtime_ns': stat.st_mtime_ns}
+                    self.metadata['artifacts'][name] = {'path': str(path.resolve()), 'bytes': stat.st_size,
+                                                        'mtime_ns': stat.st_mtime_ns, 'sha256': sha256(path)}
                 except OSError as exc:
                     self.metadata['artifacts'][name] = {'path': str(path), 'stat_error': str(exc)}
             (self.directory / 'metadata.json').write_text(json.dumps(self.metadata, indent=2) + '\n')

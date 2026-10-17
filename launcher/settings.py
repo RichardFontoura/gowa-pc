@@ -58,8 +58,7 @@ LEGACY_KEY_DEFAULTS = {
 }
 # Mouse buttons accepted as bindings; they are not SDL key names.
 MOUSE_NAMES = ('Mouse Left', 'Mouse Right', 'Mouse Middle', 'Mouse X1', 'Mouse X2')
-# Keys the game itself uses (Insert opens the PC menu, F10 toggles the FPS counter).
-RESERVED_KEYS = ('Insert', 'F10')
+RESERVED_KEYS = ('Insert', 'F10', 'F9')
 # Keys hard-wired to the analog sticks (WASD left stick, arrows right stick).
 STICK_KEYS = ('W', 'A', 'S', 'D', 'Up', 'Down', 'Left', 'Right')
 # Maximum number of keys/mouse buttons bound to one game button.
@@ -162,7 +161,7 @@ def normalize_binding(name, value):
         raise ValueError(f'{name}: a mesma tecla aparece duas vezes')
     for part in parts:
         if part.casefold() in (k.casefold() for k in RESERVED_KEYS):
-            raise ValueError(f'{part} está reservada (Insert abre o menu do jogo, F10 liga o contador de FPS).')
+            raise ValueError(f'{part} está reservada (Insert abre o menu do jogo, F10 liga o contador de FPS, F9 marca início/fim de cena).')
     return '|'.join(parts)
 
 

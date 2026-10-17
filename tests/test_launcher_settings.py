@@ -139,7 +139,7 @@ class KeymapTests(unittest.TestCase):
         self.assertEqual(keynames.sdl_mouse_name(1), 'Mouse Left')
         self.assertEqual(keynames.sdl_mouse_name(3), 'Mouse Right')
         self.assertIsNone(keynames.sdl_mouse_name(4))
-        for name in sorted(set(keynames.KEYSYMS.values()) | {f'F{n}' for n in range(1, 25)} - {'F10'}):
+        for name in sorted(set(keynames.KEYSYMS.values()) | {f'F{n}' for n in range(1, 25)} - {'F9', 'F10'}):
             with self.subTest(name=name):
                 settings.validate_keys(settings.validate(self.keys(cross=name)))
 
