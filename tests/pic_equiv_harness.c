@@ -1,4 +1,5 @@
 #include "spu_interp.c"
+#include "spu_pic_match.h"
 #include <setjmp.h>
 #include <signal.h>
 #include <stdint.h>
@@ -47,6 +48,8 @@ static uint32_t g_code_lo, g_code_hi;
 static jmp_buf g_escape;
 static spu_context g_init, g_interp, g_aot;
 static uint32_t g_skew;
+static int g_truncate;
+static const spu_pic_entry* g_trunc;
 
 int g_spu_ls_watch_n, g_spu_ls_probe, g_wws_read_probe, g_wws_code_probe, g_spu_smc_watch;
 SPU_THREAD_LOCAL void (*g_spu_trampoline_fn)(spu_context*) = 0;
@@ -150,10 +153,11 @@ static const spu_pic_entry* find_by_content(const spu_context* ctx, uint32_t pc,
 {
     for (unsigned i = 0; i < g_region->count; i++) {
         const spu_pic_entry* e = &g_region->entries[i];
-        uint32_t before = e->addr - e->lo, span = e->hi - e->lo;
-        if (!e->func || pc < before || pc - before + span > SPU_LS_SIZE) continue;
+        if (!e->func || pc + 16u > SPU_LS_SIZE) continue;
         if (memcmp(ctx->ls + pc, g_region->code + e->addr, 16) != 0) continue;
-        if (memcmp(ctx->ls + (pc - before), g_region->code + e->lo, span) != 0) continue;
+        if (!spu_pic_entry_matches(ctx->ls, SPU_LS_SIZE, pc, g_region->code, e->addr, e->lo, e->hi,
+                                   e->ranges, e->nranges))
+            continue;
         *base = (pc - e->addr) & SPU_LS_MASK;
         return e;
     }
@@ -241,6 +245,13 @@ static void init_case(uint64_t seed, uint32_t base)
         g_init.ls[i] = v >> 24; g_init.ls[i + 1] = v >> 16; g_init.ls[i + 2] = v >> 8; g_init.ls[i + 3] = v;
     }
     memcpy(g_init.ls + base, g_region->code, g_region->size);
+    if (g_trunc && g_trunc->nranges)
+        for (uint32_t k = 0; k < g_region->size && base + k < SPU_LS_SIZE; k++) {
+            int kept = 0;
+            for (uint32_t r = 0; r < g_trunc->nranges && !kept; r++)
+                kept = k >= g_trunc->ranges[2 * r] && k < g_trunc->ranges[2 * r + 1];
+            if (!kept) g_init.ls[base + k] = (uint8_t)mix32(seed ^ 0xA5A5A5A5ull ^ k);
+        }
     for (unsigned r = 0; r < 128; r++) {
         unsigned style = mix32(seed * 7 + r) & 3u;
         for (unsigned l = 0; l < 4; l++) g_init.gpr[r]._u32[l] = reg_value(seed, r, l, style);
@@ -255,7 +266,7 @@ static void init_case(uint64_t seed, uint32_t base)
 
 static int touched_code(const spu_context* ctx, uint32_t base)
 {
-    return memcmp(ctx->ls + base, g_region->code, g_region->size) != 0;
+    return memcmp(ctx->ls + base, g_init.ls + base, g_region->size) != 0;
 }
 
 static int compare(const spu_context* a, const spu_context* b, const chan_log* la, const chan_log* lb,
@@ -297,6 +308,7 @@ static int run_entry(const spu_pic_entry* e, const uint32_t* bases, unsigned nba
     unsigned valid = 0, skipped = 0, failed = 0;
     uint64_t steps_total = 0;
     static chan_log li, la;
+    g_trunc = g_truncate ? e : 0;
     for (unsigned b = 0; b < nbases; b++) {
         uint32_t base = bases[b];
         if (base + g_region->size > DATA_LO) continue;
@@ -489,6 +501,7 @@ int main(int argc, char** argv)
     }
     g_region = &g_regions[ri];
     if (getenv("PIC_EQUIV_SKEW")) g_skew = (uint32_t)strtoul(getenv("PIC_EQUIV_SKEW"), 0, 0);
+    g_truncate = getenv("PIC_EQUIV_TRUNCATE") != NULL;
     uint32_t bases[16];
     unsigned nbases = 0;
     for (char* tok = strtok(argv[3], ","); tok && nbases < 16; tok = strtok(0, ","))

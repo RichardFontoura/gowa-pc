@@ -45,6 +45,8 @@ def main():
     parser.add_argument('--snap', action='append', default=[], metavar='ENTRY=GLOB',
                         help='spu_context dumps taken at a lifted entry (gdb dump of *ctx); run them instead of random cases')
     parser.add_argument('--rebase', default='0', help='comma-separated LS shifts applied to the snapshot code (0 = as captured)')
+    parser.add_argument('--truncate', action='store_true',
+                        help='replace every region byte outside the tested entry\'s reachable instruction ranges with noise')
     args = parser.parse_args()
     regions = args.regions or sorted((PORT / 'spu').glob('spu_pic_*'))
     failed = 0
@@ -73,7 +75,8 @@ def main():
         bases = bases_for(size)
         cmd = [str(exe), '0', str(args.cases), ','.join(hex(b) for b in bases)]
         cmd += [e for e in args.entries.split(',') if e]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        env = dict(os.environ, PIC_EQUIV_TRUNCATE='1') if args.truncate else None
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600, env=env)
         if log:
             log.write(f'== {region.name} bases={",".join(hex(b) for b in bases)}\n{result.stdout}')
         m = SUMMARY.search(result.stdout)
